@@ -1,0 +1,1242 @@
+/* ==========================================================================
+   ModelPulse component styles
+   Covers every mp-* class used by the dashboard views, plus the legacy
+   card/badge/table classes used by standalone chart components.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. App layout
+   -------------------------------------------------------------------------- */
+
+.mp-layout {
+  display: flex;
+  min-height: 100vh;
+  background-color: var(--color-semantic-bg-base);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-main-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mp-topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky, 20);
+  min-height: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 24px;
+  background-color: color-mix(in srgb, var(--color-semantic-bg-surface) 85%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--color-semantic-border-subtle);
+}
+
+.mp-page-body {
+  flex: 1;
+  padding: 24px;
+  min-width: 0;
+}
+
+/* --------------------------------------------------------------------------
+   2. Sidebar
+   -------------------------------------------------------------------------- */
+
+.mp-sidebar {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  width: 240px;
+  flex-shrink: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-semantic-bg-surface);
+  border-right: 1px solid var(--color-semantic-border-subtle);
+}
+
+.mp-sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 14px;
+  border-bottom: 1px solid var(--color-semantic-border-subtle);
+}
+
+.mp-logo-icon {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.05rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--color-brand-cyan-500), var(--color-brand-blue-600));
+  color: #04141c;
+  box-shadow: var(--shadow-glow-cyan, 0 0 16px -6px rgba(6, 182, 212, 0.6));
+}
+
+.mp-sidebar-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 10px;
+  overflow-y: auto;
+}
+
+.mp-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-semantic-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.mp-sidebar-item:hover {
+  background-color: var(--color-semantic-bg-hover);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-sidebar-item.active {
+  background-color: color-mix(in srgb, var(--color-brand-cyan-500) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-cyan-500) 30%, transparent);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border-top: 1px solid var(--color-semantic-border-subtle);
+}
+
+/* --------------------------------------------------------------------------
+   3. Cards & section headers
+   -------------------------------------------------------------------------- */
+
+.mp-card {
+  background-color: var(--color-semantic-bg-surface);
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+
+.mp-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mp-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-section-subtitle {
+  margin-top: 3px;
+  font-size: 0.75rem;
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background-color: var(--color-brand-cyan-500);
+  animation: mp-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes mp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* --------------------------------------------------------------------------
+   4. Buttons
+   -------------------------------------------------------------------------- */
+
+.mp-btn-primary,
+.mp-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+    color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.mp-btn-primary {
+  border: 1px solid transparent;
+  background: linear-gradient(135deg, var(--color-brand-cyan-500), var(--color-brand-cyan-600));
+  color: #04212a;
+  box-shadow: 0 4px 14px rgba(6, 182, 212, 0.25);
+}
+
+.mp-btn-primary:hover:not(:disabled) {
+  box-shadow: 0 6px 20px rgba(6, 182, 212, 0.35);
+  transform: translateY(-1px);
+}
+
+.mp-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.mp-btn-ghost {
+  border: 1px solid var(--color-semantic-border-subtle);
+  background-color: transparent;
+  color: var(--color-semantic-text-secondary);
+}
+
+.mp-btn-ghost:hover:not(:disabled) {
+  background-color: var(--color-semantic-bg-hover);
+  border-color: var(--color-semantic-border-default);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-btn-primary:disabled,
+.mp-btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* --------------------------------------------------------------------------
+   5. Form controls
+   -------------------------------------------------------------------------- */
+
+.mp-input,
+.mp-select,
+.mp-textarea {
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--color-semantic-border-default);
+  border-radius: 8px;
+  background-color: var(--color-semantic-bg-base);
+  color: var(--color-semantic-text-primary);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mp-textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.mp-select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-semantic-text-muted) 50%),
+    linear-gradient(135deg, var(--color-semantic-text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+.mp-select option,
+.mp-select optgroup {
+  background-color: var(--color-semantic-bg-elevated);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-input:focus,
+.mp-select:focus,
+.mp-textarea:focus {
+  outline: none;
+  border-color: var(--color-brand-cyan-500);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand-cyan-500) 25%, transparent);
+}
+
+.mp-input::placeholder,
+.mp-textarea::placeholder {
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-input:disabled,
+.mp-select:disabled,
+.mp-textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------------------
+   6. Badges, pills, tags
+   -------------------------------------------------------------------------- */
+
+.mp-badge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--color-semantic-border-default);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-semantic-bg-hover) 55%, transparent);
+  color: var(--color-semantic-text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mp-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--color-brand-emerald-500) 35%, transparent);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-brand-emerald-500) 12%, transparent);
+  color: var(--color-brand-emerald-400);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mp-live-pill .mp-pulse-dot {
+  width: 6px;
+  height: 6px;
+  background-color: var(--color-brand-emerald-500);
+}
+
+.mp-kpi-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.mp-badge-cyan {
+  background-color: color-mix(in srgb, var(--color-brand-cyan-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-cyan-500) 35%, transparent);
+  color: var(--color-brand-cyan-300);
+}
+
+.mp-badge-emerald {
+  background-color: color-mix(in srgb, var(--color-brand-emerald-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-emerald-500) 35%, transparent);
+  color: var(--color-brand-emerald-300);
+}
+
+.mp-badge-amber {
+  background-color: color-mix(in srgb, var(--color-brand-amber-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-amber-500) 35%, transparent);
+  color: var(--color-brand-amber-300);
+}
+
+.mp-badge-purple {
+  background-color: color-mix(in srgb, var(--color-brand-purple-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-purple-500) 35%, transparent);
+  color: var(--color-brand-purple-300);
+}
+
+.mp-badge-rose {
+  background-color: color-mix(in srgb, var(--color-brand-rose-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-rose-500) 35%, transparent);
+  color: var(--color-brand-rose-300);
+}
+
+.mp-preset-pill {
+  padding: 3px 10px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--color-semantic-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.mp-preset-pill:hover {
+  background-color: var(--color-semantic-bg-hover);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-preset-pill.active {
+  background-color: color-mix(in srgb, var(--color-brand-cyan-500) 15%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-cyan-500) 45%, transparent);
+  color: var(--color-brand-cyan-300);
+}
+
+/* --------------------------------------------------------------------------
+   7. KPI grid
+   -------------------------------------------------------------------------- */
+
+.mp-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
+  gap: 16px;
+}
+
+.mp-kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background-color: var(--color-semantic-bg-surface);
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.mp-kpi-card:hover {
+  border-color: color-mix(in srgb, var(--color-brand-cyan-500) 30%, transparent);
+  box-shadow: var(--shadow-card-hover, 0 8px 30px -8px rgba(6, 182, 212, 0.12));
+  transform: translateY(-2px);
+}
+
+.mp-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mp-kpi-title {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-kpi-val {
+  font-size: clamp(1.4rem, 1.2rem + 1vw, 1.9rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-kpi-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.6875rem;
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-grid-middle {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+/* --------------------------------------------------------------------------
+   8. Active target banner
+   -------------------------------------------------------------------------- */
+
+.mp-active-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--color-brand-cyan-500) 25%, transparent);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--color-brand-cyan-500) 10%, transparent),
+      color-mix(in srgb, var(--color-brand-purple-500) 6%, transparent) 55%,
+      transparent),
+    var(--color-semantic-bg-surface);
+}
+
+.mp-active-banner-header {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-active-main-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mp-active-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mp-model-icon-box {
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.3rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-brand-cyan-500) 30%, transparent);
+}
+
+.mp-active-model-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  word-break: break-all;
+}
+
+.mp-active-specs {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: var(--color-semantic-text-muted);
+  word-break: break-all;
+}
+
+.mp-active-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mp-active-right .mp-select {
+  width: auto;
+}
+
+.mp-active-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 20px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-semantic-border-subtle);
+  font-size: 0.75rem;
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-active-footer strong {
+  color: var(--color-semantic-text-secondary);
+}
+
+/* --------------------------------------------------------------------------
+   9. Tables
+   -------------------------------------------------------------------------- */
+
+.mp-table-wrapper {
+  margin-top: 14px;
+  overflow-x: auto;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 10px;
+}
+
+.mp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.mp-table thead th {
+  padding: 9px 12px;
+  text-align: left;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-semantic-text-muted);
+  background-color: var(--color-semantic-bg-elevated);
+  border-bottom: 1px solid var(--color-semantic-border-subtle);
+  white-space: nowrap;
+}
+
+.mp-table tbody td {
+  padding: 10px 12px;
+  vertical-align: middle;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-semantic-border-subtle) 65%, transparent);
+  color: var(--color-semantic-text-secondary);
+}
+
+.mp-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.mp-table tbody tr:hover td {
+  background-color: color-mix(in srgb, var(--color-semantic-text-primary) 3%, transparent);
+}
+
+/* --------------------------------------------------------------------------
+   10. Code viewer
+   -------------------------------------------------------------------------- */
+
+.mp-code-viewer {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 10px;
+  background-color: #060a12;
+  color: #e2e8f0;
+  font-family: var(--font-family-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mp-code-viewer pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mp-code-line-num {
+  display: inline-block;
+  width: 26px;
+  margin-right: 12px;
+  text-align: right;
+  color: #475569;
+  font-size: 0.75rem;
+  user-select: none;
+}
+
+/* --------------------------------------------------------------------------
+   11. Playground
+   -------------------------------------------------------------------------- */
+
+.mp-playground-grid {
+  display: grid;
+  grid-template-columns: minmax(340px, 45%) minmax(380px, 55%);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.mp-playground-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.mp-playground-kpi-card {
+  padding: 10px 12px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 8px;
+  background-color: var(--color-semantic-bg-base);
+}
+
+.mp-playground-kpi-title {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-semantic-text-muted);
+}
+
+.mp-playground-kpi-val {
+  margin-top: 4px;
+  font-family: var(--font-family-mono);
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--color-semantic-text-primary);
+  word-break: break-word;
+}
+
+/* --------------------------------------------------------------------------
+   12. Throughput bars
+   -------------------------------------------------------------------------- */
+
+.mp-tps-bar-container {
+  width: 100%;
+  max-width: 130px;
+  height: 6px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-semantic-text-primary) 8%, transparent);
+}
+
+.mp-tps-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--color-brand-cyan-500), var(--color-brand-cyan-300));
+  transition: width 0.4s ease;
+}
+
+/* --------------------------------------------------------------------------
+   13. Modals
+   -------------------------------------------------------------------------- */
+
+.mp-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 50);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background-color: rgba(2, 6, 14, 0.72);
+  backdrop-filter: blur(4px);
+  animation: mp-fade-in 0.15s ease-out;
+}
+
+.mp-modal-content {
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  border: 1px solid var(--color-semantic-border-default);
+  border-radius: 16px;
+  background-color: var(--color-semantic-bg-elevated);
+  box-shadow: var(--shadow-modal, 0 25px 50px -12px rgba(0, 0, 0, 0.7));
+  animation: mp-scale-in 0.18s ease-out;
+}
+
+.mp-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--color-semantic-border-subtle);
+}
+
+.mp-modal-close {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-semantic-text-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.mp-modal-close:hover:not(:disabled) {
+  background-color: var(--color-semantic-bg-hover);
+  color: var(--color-semantic-text-primary);
+}
+
+.mp-modal-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes mp-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes mp-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* --------------------------------------------------------------------------
+   14. Responsive
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1100px) {
+  .mp-grid-middle {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mp-playground-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .mp-layout {
+    flex-direction: column;
+  }
+
+  .mp-sidebar {
+    position: static;
+    width: 100%;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--color-semantic-border-subtle);
+  }
+
+  .mp-sidebar-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 10px;
+  }
+
+  .mp-sidebar-item {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  .mp-sidebar-footer {
+    display: none;
+  }
+
+  .mp-topbar {
+    position: static;
+    padding: 10px 16px;
+  }
+
+  .mp-page-body {
+    padding: 16px;
+  }
+
+  .mp-active-main-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   15. Legacy standalone components (charts, breakdowns, testers)
+   -------------------------------------------------------------------------- */
+
+.card {
+  padding: 16px 18px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 12px;
+  background-color: var(--color-semantic-bg-surface);
+}
+
+.chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.chart-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-semantic-text-primary);
+}
+
+.chart-subtitle {
+  margin-top: 3px;
+  font-size: 0.75rem;
+  color: var(--color-semantic-text-muted);
+}
+
+.table-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 10px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.data-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-semantic-text-muted);
+  background-color: var(--color-semantic-bg-elevated);
+  border-bottom: 1px solid var(--color-semantic-border-subtle);
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-semantic-border-subtle) 65%, transparent);
+  color: var(--color-semantic-text-secondary);
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge-success,
+.badge-confirmed {
+  background-color: color-mix(in srgb, var(--color-brand-emerald-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-emerald-500) 35%, transparent);
+  color: var(--color-brand-emerald-300);
+}
+
+.badge-failure {
+  background-color: color-mix(in srgb, var(--color-brand-rose-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-rose-500) 35%, transparent);
+  color: var(--color-brand-rose-300);
+}
+
+.badge-estimated {
+  background-color: color-mix(in srgb, var(--color-brand-amber-500) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-amber-500) 35%, transparent);
+  color: var(--color-brand-amber-300);
+}
+
+.badge-unknown {
+  background-color: color-mix(in srgb, var(--color-semantic-text-muted) 18%, transparent);
+  border-color: var(--color-semantic-border-default);
+  color: var(--color-semantic-text-secondary);
+}
+
+.state-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 140px;
+  padding: 24px 12px;
+  border: 1px dashed var(--color-semantic-border-default);
+  border-radius: 8px;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--color-semantic-text-muted);
+}
+
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid color-mix(in srgb, var(--color-semantic-text-muted) 35%, transparent);
+  border-top-color: var(--color-brand-cyan-500);
+  border-radius: 50%;
+  animation: mp-spin 0.8s linear infinite;
+}
+
+@keyframes mp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 14px;
+  font-size: 0.75rem;
+  color: var(--color-semantic-text-muted);
+}
+
+.page-btn {
+  padding: 4px 11px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-semantic-text-secondary);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.page-btn:hover:not(:disabled) {
+  background-color: var(--color-semantic-bg-hover);
+  color: var(--color-semantic-text-primary);
+}
+
+.page-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 10px;
+  background-color: var(--color-semantic-bg-surface);
+}
+
+.filter-select {
+  padding: 5px 26px 5px 9px;
+  border: 1px solid var(--color-semantic-border-default);
+  border-radius: 8px;
+  background-color: var(--color-semantic-bg-base);
+  color: var(--color-semantic-text-primary);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.filter-btn {
+  padding: 5px 11px;
+  border: 1px solid var(--color-semantic-border-subtle);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-semantic-text-secondary);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.filter-btn:hover {
+  background-color: var(--color-semantic-bg-hover);
+  color: var(--color-semantic-text-primary);
+}
+
+.filter-btn-primary {
+  background-color: color-mix(in srgb, var(--color-brand-cyan-500) 15%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand-cyan-500) 45%, transparent);
+  color: var(--color-brand-cyan-300);
+}
+
+
+/* --------------------------------------------------------------------------
+   ModelPulse Target UI (Cyber-Telemetry Dark System)
+   -------------------------------------------------------------------------- */
+
+:root {
+  --mp-bg-root: #0c0e14;
+  --mp-bg-card: #12151e;
+  --mp-bg-subtle: #161925;
+  --mp-border: #1e2433;
+  --mp-border-subtle: #171b26;
+  --mp-orange: #f97316;
+  --mp-orange-hover: #ea580c;
+  --mp-green: #10b981;
+  --mp-cyan: #38bdf8;
+  --mp-text-primary: #f8fafc;
+  --mp-text-secondary: #94a3b8;
+  --mp-text-muted: #64748b;
+}
+
+body {
+  background-color: var(--mp-bg-root);
+  color: var(--mp-text-primary);
+}
+
+.mp-layout {
+  background-color: var(--mp-bg-root);
+}
+
+.mp-sidebar {
+  background-color: #0f121a;
+  border-right: 1px solid var(--mp-border);
+}
+
+.mp-sidebar-brand {
+  border-bottom: 1px solid var(--mp-border);
+  padding: 14px 16px;
+  background-color: #0f121a;
+}
+
+.mp-topbar {
+  background-color: rgba(15, 18, 26, 0.95);
+  border-bottom: 1px solid var(--mp-border);
+  padding: 10px 24px;
+}
+
+.mp-card {
+  background-color: var(--mp-bg-card);
+  border: 1px solid var(--mp-border);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.mp-btn-primary {
+  background-color: var(--mp-orange);
+  color: #0c0e14;
+  border: none;
+  border-radius: 6px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mp-btn-primary:hover {
+  background-color: var(--mp-orange-hover);
+  color: #ffffff;
+}
+
+.mp-btn-ghost {
+  background-color: transparent;
+  border: 1px solid var(--mp-border);
+  color: var(--mp-text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mp-btn-ghost:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+  color: var(--mp-text-primary);
+  border-color: #2b3345;
+}
+
+.mp-badge-tag {
+  background-color: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--mp-border);
+  color: var(--mp-text-secondary);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.mp-select {
+  background-color: #0c0e14;
+  border: 1px solid var(--mp-border);
+  color: var(--mp-text-primary);
+  border-radius: 6px;
+}
+
+.mp-select:focus {
+  outline: none;
+  border-color: var(--mp-orange);
+}
+
+/* Status dots */
+.mp-pulse-dot {
+  display: inline-block;
+  border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+}
+
+/* Hero Online Banner */
+.mp-gateway-hero {
+  background: linear-gradient(180deg, rgba(18, 21, 30, 0.95), rgba(15, 18, 25, 0.95));
+  border: 1px solid var(--mp-border);
+  border-radius: 8px;
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* 4-Stat Grid */
+.mp-4stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.mp-stat-card {
+  background-color: var(--mp-bg-card);
+  border: 1px solid var(--mp-border);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+/* Diagnostic Drawer & Split layout */
+.mp-split-logs {
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  gap: 16px;
+}
+
+@media (max-width: 1200px) {
+  .mp-split-logs {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Applications 2-Column Grid */
+.mp-apps-grid {
+  display: grid;
+  grid-template-columns: 1fr 440px;
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .mp-apps-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Table styling */
+.mp-table th {
+  background-color: rgba(15, 18, 26, 0.8);
+  color: var(--mp-text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--mp-border);
+}
+
+.mp-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #161a24;
+  font-size: 0.75rem;
+}
+
+.mp-table tr:hover td {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.mp-table tr.selected td {
+  background-color: rgba(249, 115, 22, 0.05);
+  border-left-color: var(--mp-orange);
+}
