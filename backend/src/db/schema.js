@@ -4,7 +4,7 @@
 import fs from 'fs';
 import path from 'path';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 4;
 const BACKUPS_TO_KEEP = 5;
 
 const BASE_SCHEMA = `
@@ -51,6 +51,8 @@ const BASE_SCHEMA = `
     eval_duration_ms REAL DEFAULT 0.0,
     load_duration_ms REAL DEFAULT 0.0,
     cache_status TEXT DEFAULT 'n/a',
+    http_status INTEGER,
+    client_model TEXT,
     error_type TEXT,
     error_message TEXT,
     timestamp TEXT NOT NULL,
@@ -82,10 +84,54 @@ const BASE_SCHEMA = `
     provider TEXT NOT NULL,
     api_base TEXT NOT NULL,
     api_key TEXT,
+    context_window INTEGER,
+    max_output_tokens INTEGER,
+    input_cost_per_million REAL,
+    output_cost_per_million REAL,
+    timeout_ms INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
   );
 
-  -- 6. Applied schema migrations
+  -- 6. Cost Budgets (global, per application, or per model)
+  CREATE TABLE IF NOT EXISTS budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    scope_type TEXT NOT NULL CHECK(scope_type IN ('global', 'application', 'model')),
+    application_id TEXT,
+    model TEXT,
+    period TEXT NOT NULL CHECK(period IN ('daily', 'monthly')),
+    metric TEXT NOT NULL CHECK(metric IN ('cost', 'tokens', 'requests')),
+    limit_value REAL NOT NULL,
+    warn_percent INTEGER NOT NULL DEFAULT 80,
+    action TEXT NOT NULL DEFAULT 'notify' CHECK(action IN ('notify', 'block')),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+  );
+
+  -- 7. Budget threshold alerts (deduplicated per budget, period and threshold)
+  CREATE TABLE IF NOT EXISTS budget_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    budget_id INTEGER NOT NULL,
+    period_key TEXT NOT NULL,
+    threshold TEXT NOT NULL CHECK(threshold IN ('warning', 'exceeded')),
+    usage_value REAL NOT NULL,
+    limit_value REAL NOT NULL,
+    message TEXT NOT NULL,
+    acknowledged INTEGER NOT NULL DEFAULT 0,
+    delivery_status TEXT NOT NULL DEFAULT 'pending',
+    delivery_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(budget_id, period_key, threshold),
+    FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_budget_alerts_created ON budget_alerts(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_budget_alerts_ack ON budget_alerts(acknowledged, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_budgets_scope ON budgets(enabled, scope_type);
+
+  -- 8. Applied schema migrations
   CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -163,6 +209,26 @@ export function initSchema(db, dbPath = process.env.DATABASE_PATH || './data/mon
   addColumn(db, 'applications', 'api_key', 'TEXT');
   addColumn(db, 'applications', 'default_model', "TEXT DEFAULT 'active-model'");
   addColumn(db, 'applications', 'updated_at', 'TEXT');
+
+  // Migration 2: real gateway status/requested model for logs, plus richer
+  // custom-model metadata used by the model editor and add-model flow.
+  addColumn(db, 'usage_events', 'http_status', 'INTEGER');
+  addColumn(db, 'usage_events', 'client_model', 'TEXT');
+  addColumn(db, 'custom_models', 'context_window', 'INTEGER');
+  addColumn(db, 'custom_models', 'max_output_tokens', 'INTEGER');
+  addColumn(db, 'custom_models', 'input_cost_per_million', 'REAL');
+  addColumn(db, 'custom_models', 'output_cost_per_million', 'REAL');
+  addColumn(db, 'custom_models', 'timeout_ms', 'INTEGER');
+
+  // Migration 3: per-application automatic failover configuration and the
+  // routing trace attached to the single resulting usage event.
+  addColumn(db, 'applications', 'failover_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'applications', 'fallback_models', "TEXT NOT NULL DEFAULT '[]'");
+  addColumn(db, 'usage_events', 'failover_used', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'usage_events', 'failover_from_model', 'TEXT');
+  addColumn(db, 'usage_events', 'failover_reason', 'TEXT');
+  addColumn(db, 'usage_events', 'failover_attempts', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'usage_events', 'failover_trace', 'TEXT');
 
   // A legacy database may contain duplicate API keys; that is a data problem,
   // not a reason to refuse to start.

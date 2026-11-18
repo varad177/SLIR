@@ -15,18 +15,36 @@ function cleanup(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-test('fresh database initializes at schema version 1', () => {
+test('fresh database initializes at schema version 4', () => {
   const { dir, file } = makeTempDb();
   const db = new Database(file);
   try {
     initSchema(db, file);
     const version = db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version;
-    assert.equal(version, 1);
+    assert.equal(version, 4);
 
     const appColumns = db.prepare('PRAGMA table_info(applications)').all().map((c) => c.name);
     assert.ok(appColumns.includes('api_key'));
     assert.ok(appColumns.includes('default_model'));
     assert.ok(appColumns.includes('updated_at'));
+    assert.ok(appColumns.includes('failover_enabled'));
+    assert.ok(appColumns.includes('fallback_models'));
+
+    const eventColumns = db.prepare('PRAGMA table_info(usage_events)').all().map((c) => c.name);
+    assert.ok(eventColumns.includes('http_status'));
+    assert.ok(eventColumns.includes('client_model'));
+    assert.ok(eventColumns.includes('failover_used'));
+    assert.ok(eventColumns.includes('failover_from_model'));
+    assert.ok(eventColumns.includes('failover_reason'));
+    assert.ok(eventColumns.includes('failover_attempts'));
+    assert.ok(eventColumns.includes('failover_trace'));
+
+    const modelColumns = db.prepare('PRAGMA table_info(custom_models)').all().map((c) => c.name);
+    assert.ok(modelColumns.includes('context_window'));
+    assert.ok(modelColumns.includes('max_output_tokens'));
+    assert.ok(modelColumns.includes('input_cost_per_million'));
+    assert.ok(modelColumns.includes('output_cost_per_million'));
+    assert.ok(modelColumns.includes('timeout_ms'));
   } finally {
     db.close();
     cleanup(dir);
@@ -68,6 +86,15 @@ test('legacy database is migrated, backed up, and keeps its rows', () => {
 
     const appColumns = db.prepare('PRAGMA table_info(applications)').all().map((c) => c.name);
     assert.ok(appColumns.includes('api_key'));
+    assert.ok(appColumns.includes('failover_enabled'));
+    assert.ok(appColumns.includes('fallback_models'));
+
+    const eventColumns = db.prepare('PRAGMA table_info(usage_events)').all().map((c) => c.name);
+    assert.ok(eventColumns.includes('http_status'));
+    assert.ok(eventColumns.includes('client_model'));
+    assert.ok(eventColumns.includes('failover_used'));
+    assert.ok(eventColumns.includes('failover_trace'));
+
     assert.deepEqual(
       db.prepare('SELECT id, name FROM applications').get(),
       { id: 'legacy', name: 'Legacy App' }

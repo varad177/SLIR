@@ -116,7 +116,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
   };
 
   const copyCurl = () => {
-    const curl = `curl http://localhost:4101/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer dev-secret-key" \\\n  -d '{\n    "model": "${modelA}",\n    "messages": [\n      {"role": "system", "content": ${JSON.stringify(systemContext)}},\n      {"role": "user", "content": ${JSON.stringify(userPrompt)}}\n    ],\n    "temperature": ${temperature},
+    const curl = `curl http://localhost:4101/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer $SLIR_APP_KEY" \\\n  -d '{\n    "model": "${modelA}",\n    "messages": [\n      {"role": "system", "content": ${JSON.stringify(systemContext)}},\n      {"role": "user", "content": ${JSON.stringify(userPrompt)}}\n    ],\n    "temperature": ${temperature},
     "max_tokens": ${maxTokens}\n  }'`;
     navigator.clipboard.writeText(curl);
     setCopiedCurl(true);
@@ -142,8 +142,8 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
           <div
             style={{
               display: 'inline-flex',
-              background: '#0c0e14',
-              border: '1px solid #1e2433',
+              background: 'var(--mp-surface-input)',
+              border: '1px solid var(--mp-border)',
               borderRadius: '6px',
               padding: '2px'
             }}
@@ -154,7 +154,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
               style={{
                 background: mode === 'single' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
                 border: 'none',
-                color: mode === 'single' ? '#f8fafc' : '#64748b',
+                color: mode === 'single' ? 'var(--mp-text-primary)' : 'var(--mp-text-muted)',
                 padding: '4px 10px',
                 borderRadius: '4px',
                 fontSize: '0.6875rem',
@@ -169,7 +169,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
               style={{
                 background: mode === 'compare' ? 'rgba(249, 115, 22, 0.15)' : 'transparent',
                 border: 'none',
-                color: mode === 'compare' ? '#f97316' : '#64748b',
+                color: mode === 'compare' ? 'var(--mp-orange)' : 'var(--mp-text-muted)',
                 padding: '4px 10px',
                 borderRadius: '4px',
                 fontSize: '0.6875rem',
@@ -183,15 +183,15 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
 
           {/* Presets */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} className="font-mono">
-            <span style={{ fontSize: '0.625rem', color: '#64748b', fontWeight: 600 }}>PRESETS:</span>
+            <span style={{ fontSize: '0.625rem', color: 'var(--mp-text-muted)', fontWeight: 600 }}>PRESETS:</span>
             {PRESETS.map((p) => (
               <button
                 key={p.id}
                 onClick={() => handleSelectPreset(p)}
                 style={{
                   background: 'transparent',
-                  border: '1px solid #1e2433',
-                  color: '#94a3b8',
+                  border: '1px solid var(--mp-border)',
+                  color: 'var(--mp-text-secondary)',
                   padding: '2px 7px',
                   borderRadius: '4px',
                   fontSize: '0.6875rem',
@@ -207,7 +207,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
         {/* Sliders & Toggles */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }} className="font-mono">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6875rem' }}>
-            <span style={{ color: '#64748b' }}>TEMP</span>
+            <span style={{ color: 'var(--mp-text-muted)' }}>TEMP</span>
             <input
               type="range"
               min="0"
@@ -215,30 +215,29 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
               step="0.05"
               value={temperature}
               onChange={(e) => setTemperature(parseFloat(e.target.value))}
-              style={{ width: '60px', accentColor: '#f97316', cursor: 'pointer' }}
+              style={{ width: '60px', accentColor: 'var(--mp-orange)', cursor: 'pointer' }}
             />
-            <span style={{ color: '#f97316', minWidth: '24px' }}>{temperature.toFixed(2)}</span>
+            <span style={{ color: 'var(--mp-orange)', minWidth: '24px' }}>{temperature.toFixed(2)}</span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6875rem' }}>
-            <span style={{ color: '#64748b' }}>MAX TOKENS</span>
+            <span style={{ color: 'var(--mp-text-muted)' }}>MAX TOKENS</span>
             <input
               type="number"
               min={1}
               max={8192}
               value={maxTokens}
               onChange={(e) => setMaxTokens(Math.max(1, Number(e.target.value) || 1))}
-              style={{ width: '70px', background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', color: '#f8fafc', fontSize: '0.6875rem', padding: '2px 6px' }}
+              style={{ width: '70px', background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', color: 'var(--mp-text-primary)', fontSize: '0.6875rem', padding: '2px 6px' }}
             />
-            <span style={{ color: '#f8fafc', fontWeight: 600 }}>{maxTokens.toLocaleString()}</span>
           </div>
 
           <button
             onClick={() => setIsStreamOn(!isStreamOn)}
             style={{
               background: isStreamOn ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
-              border: `1px solid ${isStreamOn ? 'rgba(16, 185, 129, 0.3)' : '#1e2433'}`,
-              color: isStreamOn ? '#10b981' : '#64748b',
+              border: `1px solid ${isStreamOn ? 'rgba(16, 185, 129, 0.3)' : 'var(--mp-border)'}`,
+              color: isStreamOn ? 'var(--mp-green)' : 'var(--mp-text-muted)',
               padding: '2px 7px',
               borderRadius: '4px',
               fontSize: '0.6875rem',
@@ -249,18 +248,18 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
               gap: '4px'
             }}
           >
-            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: isStreamOn ? '#10b981' : '#64748b' }} />
-            STREAM {isStreamOn ? 'ON' : 'OFF'}
+            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: isStreamOn ? 'var(--mp-green)' : 'var(--mp-text-muted)' }} />
+            STREAM REQUEST {isStreamOn ? 'ON' : 'OFF'}
           </button>
 
-          <span style={{ fontSize: '0.625rem', color: '#10b981' }}>
-            ● Zero Retention
+          <span style={{ fontSize: '0.625rem', color: 'var(--mp-green)' }}>
+            Prompts stay in memory
           </span>
         </div>
       </div>
 
       {error && (
-        <div style={{ background: 'rgba(244, 63, 94, 0.1)', border: '1px solid rgba(244, 63, 94, 0.25)', color: '#fb7185', padding: '8px 14px', borderRadius: '6px', fontSize: '0.75rem' }}>
+        <div style={{ background: 'rgba(244, 63, 94, 0.1)', border: '1px solid rgba(244, 63, 94, 0.25)', color: 'var(--mp-red)', padding: '8px 14px', borderRadius: '6px', fontSize: '0.75rem' }}>
           {error}
         </div>
       )}
@@ -271,19 +270,19 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
         <div className="mp-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: '#f8fafc' }}>
+              <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--mp-text-primary)' }}>
                 Payload Construction
               </span>
-              <span className="font-mono" style={{ fontSize: '0.6875rem', color: '#64748b' }}>
-                Total: {totalTokens} tokens
+              <span className="font-mono" style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }}>
+                ~{totalTokens} est. tokens
               </span>
             </div>
 
             {/* System Context */}
             <div style={{ marginBottom: '10px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }} className="font-mono">
-                <span style={{ fontSize: '0.625rem', color: '#94a3b8', fontWeight: 600 }}>● SYSTEM CONTEXT</span>
-                <span style={{ fontSize: '0.625rem', color: '#64748b' }}>{sysTokens} tokens</span>
+                <span style={{ fontSize: '0.625rem', color: 'var(--mp-text-secondary)', fontWeight: 600 }}>● SYSTEM CONTEXT</span>
+                <span style={{ fontSize: '0.625rem', color: 'var(--mp-text-muted)' }}>~{sysTokens} tok</span>
               </div>
               <textarea
                 value={systemContext}
@@ -292,10 +291,10 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                 className="font-mono"
                 style={{
                   width: '100%',
-                  background: '#0c0e14',
-                  border: '1px solid #1e2433',
+                  background: 'var(--mp-surface-input)',
+                  border: '1px solid var(--mp-border)',
                   borderRadius: '6px',
-                  color: '#cbd5e1',
+                  color: 'var(--mp-text-secondary)',
                   fontSize: '0.6875rem',
                   padding: '8px',
                   resize: 'vertical',
@@ -307,8 +306,8 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
             {/* User Prompt */}
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }} className="font-mono">
-                <span style={{ fontSize: '0.625rem', color: '#f97316', fontWeight: 600 }}>● USER PROMPT / PAYLOAD</span>
-                <span style={{ fontSize: '0.625rem', color: '#64748b' }}>{userTokens} tokens</span>
+                <span style={{ fontSize: '0.625rem', color: 'var(--mp-orange)', fontWeight: 600 }}>● USER PROMPT / PAYLOAD</span>
+                <span style={{ fontSize: '0.625rem', color: 'var(--mp-text-muted)' }}>~{userTokens} tok</span>
               </div>
               <textarea
                 value={userPrompt}
@@ -317,10 +316,10 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                 className="font-mono"
                 style={{
                   width: '100%',
-                  background: '#0c0e14',
-                  border: '1px solid #1e2433',
+                  background: 'var(--mp-surface-input)',
+                  border: '1px solid var(--mp-border)',
                   borderRadius: '6px',
-                  color: '#cbd5e1',
+                  color: 'var(--mp-text-secondary)',
                   fontSize: '0.6875rem',
                   padding: '8px',
                   resize: 'vertical',
@@ -339,14 +338,13 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                 display: 'flex',
                 justifyContent: 'space-between',
                 fontSize: '0.625rem',
-                color: '#64748b',
+                color: 'var(--mp-text-muted)',
                 padding: '8px 0',
-                borderTop: '1px solid #1c212d',
+                borderTop: '1px solid var(--mp-border-subtle)',
                 marginTop: '10px'
               }}
             >
-              <span>Endpoint: :4101/v1/chat/completions</span>
-              <span style={{ color: '#10b981' }}>🔒 Prompts Not Stored</span>
+              <span>Endpoint: /v1/chat/completions</span>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} className="font-mono">
@@ -355,7 +353,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                 disabled={running}
                 style={{
                   flex: 1,
-                  background: '#f97316',
+                  background: 'var(--mp-orange)',
                   color: '#0c0e14',
                   border: 'none',
                   borderRadius: '6px',
@@ -406,39 +404,26 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
             {/* Top Bar */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
-                <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: '#f8fafc' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-green)' }} />
+                <span style={{ fontWeight: 700, fontSize: '0.8125rem', color: 'var(--mp-text-primary)' }}>
                   {mode === 'compare' ? 'Dual Inference Matrix' : 'Single Inference Trace'}
                 </span>
-                <span className="font-mono" style={{ fontSize: '0.6875rem', color: '#10b981' }}>
-                  ● Direct Gateway Response
+                <span className="font-mono" style={{ fontSize: '0.6875rem', color: 'var(--mp-green)' }}>
+                  ● Direct Model Response
                 </span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} className="font-mono">
-                <button
-                  className="mp-btn-ghost font-mono"
-                  style={{ fontSize: '0.6875rem', padding: '3px 8px' }}
-                >
-                  JSON Metrics
-                </button>
-                {mode === 'compare' && (
-                  <span style={{ fontSize: '0.6875rem', color: '#f97316', cursor: 'pointer' }}>
-                    + Add Model C
-                  </span>
-                )}
-              </div>
             </div>
 
             {/* Model Columns Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: mode === 'compare' ? '1fr 1fr' : '1fr', gap: '12px' }}>
               {/* Column A */}
-              <div style={{ background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', overflow: 'hidden' }}>
+              <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', overflow: 'hidden' }}>
                 {/* Column A Header */}
-                <div style={{ padding: '8px 10px', borderBottom: '1px solid #1c212d', background: '#12151e' }}>
+                <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--mp-border-subtle)', background: 'var(--mp-bg-card)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f97316' }} />
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-orange)' }} />
                       <select
                         value={modelA}
                         onChange={(e) => setModelA(e.target.value)}
@@ -451,32 +436,32 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                         ))}
                       </select>
                     </div>
-                    <span className="font-mono" style={{ fontSize: '0.625rem', color: '#10b981', background: 'rgba(16, 185, 129, 0.1)', padding: '1px 5px', borderRadius: '3px' }}>
-                      LOCAL HOST
+                    <span className="font-mono" style={{ fontSize: '0.625rem', color: 'var(--mp-text-secondary)', background: 'rgba(148, 163, 184, 0.1)', padding: '1px 5px', borderRadius: '3px' }}>
+                      TARGET A
                     </span>
                   </div>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: '#64748b', flexWrap: 'wrap', gap: '6px' }} className="font-mono">
-                    <span>COLD: <strong style={{ color: resultA?.loadMs && resultA.loadMs > 1000 ? '#fb7185' : '#e2e8f0' }}>{resultA?.loadMs ? `${(resultA.loadMs / 1000).toFixed(1)}s` : '0ms'}</strong></span>
-                    <span>KV: <strong style={{ color: '#38bdf8' }}>{resultA?.promptEvalMs ? `${Math.round(resultA.promptEvalMs)}ms` : '--'}</strong></span>
-                    <span>GEN: <strong style={{ color: '#10b981' }}>{resultA?.evalMs ? `${Math.round(resultA.evalMs)}ms` : '--'}</strong></span>
-                    <span>SPEED: <strong style={{ color: '#e2e8f0' }}>{resultA?.tokensPerSec ? `${Math.round(resultA.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
-                    <span>TOTAL: <strong style={{ color: '#f8fafc' }}>{resultA?.latencyMs ? (resultA.latencyMs >= 1000 ? `${(resultA.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultA.latencyMs)}ms`) : '--'}</strong></span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: 'var(--mp-text-muted)', flexWrap: 'wrap', gap: '6px' }} className="font-mono">
+                    <span>COLD: <strong style={{ color: resultA?.loadMs && resultA.loadMs > 1000 ? 'var(--mp-red)' : 'var(--mp-text-primary)' }}>{resultA ? (resultA.loadMs ? `${(resultA.loadMs / 1000).toFixed(1)}s` : '0ms') : '--'}</strong></span>
+                    <span>KV: <strong style={{ color: 'var(--mp-cyan)' }}>{resultA?.promptEvalMs ? `${Math.round(resultA.promptEvalMs)}ms` : '--'}</strong></span>
+                    <span>GEN: <strong style={{ color: 'var(--mp-green)' }}>{resultA?.evalMs ? `${Math.round(resultA.evalMs)}ms` : '--'}</strong></span>
+                    <span>SPEED: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultA?.tokensPerSec ? `${Math.round(resultA.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
+                    <span>TOTAL: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultA?.latencyMs ? (resultA.latencyMs >= 1000 ? `${(resultA.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultA.latencyMs)}ms`) : '--'}</strong></span>
                   </div>
                 </div>
 
                 {/* Column A Output Terminal */}
                 <div style={{ padding: '10px', height: '220px', overflowY: 'auto' }} className="font-mono">
-                  <div style={{ fontSize: '0.625rem', color: '#64748b', marginBottom: '6px' }}>
+                  <div style={{ fontSize: '0.625rem', color: 'var(--mp-text-muted)', marginBottom: '6px' }}>
                     {resultA ? `--- [INFERENCE COMPLETED IN ${Math.round(resultA.latencyMs)}ms] ---` : '--- [READY FOR INFERENCE] ---'}
                   </div>
-                  <pre style={{ margin: 0, fontSize: '0.6875rem', color: '#cbd5e1', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>
+                  <pre style={{ margin: 0, fontSize: '0.6875rem', color: 'var(--mp-text-secondary)', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>
 {resultA?.content || 'Click "Run Inference" to execute prompt against this model...'}
                   </pre>
                 </div>
 
                 {/* Column A Footer */}
-                <div style={{ padding: '6px 10px', borderTop: '1px solid #1c212d', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.625rem', color: '#64748b' }} className="font-mono">
+                <div style={{ padding: '6px 10px', borderTop: '1px solid var(--mp-border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.625rem', color: 'var(--mp-text-muted)' }} className="font-mono">
                   <span>Target: {modelA}</span>
                   <button
                     onClick={() => {
@@ -484,7 +469,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                       setCopiedOutputA(true);
                       setTimeout(() => setCopiedOutputA(false), 2000);
                     }}
-                    style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--mp-text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
                   >
                     {copiedOutputA ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
                     <span>{copiedOutputA ? 'Copied' : 'Copy'}</span>
@@ -494,12 +479,12 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
 
               {/* Column B (When in Compare Mode) */}
               {mode === 'compare' && (
-                <div style={{ background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', overflow: 'hidden' }}>
+                <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', overflow: 'hidden' }}>
                   {/* Column B Header */}
-                  <div style={{ padding: '8px 10px', borderBottom: '1px solid #1c212d', background: '#12151e' }}>
+                  <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--mp-border-subtle)', background: 'var(--mp-bg-card)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
+                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-green)' }} />
                         <select
                           value={modelB}
                           onChange={(e) => setModelB(e.target.value)}
@@ -511,32 +496,32 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                           ))}
                         </select>
                       </div>
-                      <span className="font-mono" style={{ fontSize: '0.625rem', color: '#f97316', background: 'rgba(249, 115, 22, 0.1)', padding: '1px 5px', borderRadius: '3px' }}>
-                        CLOUD FAST
+                      <span className="font-mono" style={{ fontSize: '0.625rem', color: 'var(--mp-text-secondary)', background: 'rgba(148, 163, 184, 0.1)', padding: '1px 5px', borderRadius: '3px' }}>
+                        TARGET B
                       </span>
                     </div>
 
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: '#64748b', flexWrap: 'wrap', gap: '6px' }} className="font-mono">
-                      <span>COLD: <strong style={{ color: resultB?.loadMs && resultB.loadMs > 1000 ? '#fb7185' : '#e2e8f0' }}>{resultB?.loadMs ? `${(resultB.loadMs / 1000).toFixed(1)}s` : '0ms'}</strong></span>
-                      <span>KV: <strong style={{ color: '#38bdf8' }}>{resultB?.promptEvalMs ? `${Math.round(resultB.promptEvalMs)}ms` : '--'}</strong></span>
-                      <span>GEN: <strong style={{ color: '#10b981' }}>{resultB?.evalMs ? `${Math.round(resultB.evalMs)}ms` : '--'}</strong></span>
-                      <span>SPEED: <strong style={{ color: '#e2e8f0' }}>{resultB?.tokensPerSec ? `${Math.round(resultB.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
-                      <span>TOTAL: <strong style={{ color: '#f8fafc' }}>{resultB?.latencyMs ? (resultB.latencyMs >= 1000 ? `${(resultB.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultB.latencyMs)}ms`) : '--'}</strong></span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: 'var(--mp-text-muted)', flexWrap: 'wrap', gap: '6px' }} className="font-mono">
+                      <span>COLD: <strong style={{ color: resultB?.loadMs && resultB.loadMs > 1000 ? 'var(--mp-red)' : 'var(--mp-text-primary)' }}>{resultB ? (resultB.loadMs ? `${(resultB.loadMs / 1000).toFixed(1)}s` : '0ms') : '--'}</strong></span>
+                      <span>KV: <strong style={{ color: 'var(--mp-cyan)' }}>{resultB?.promptEvalMs ? `${Math.round(resultB.promptEvalMs)}ms` : '--'}</strong></span>
+                      <span>GEN: <strong style={{ color: 'var(--mp-green)' }}>{resultB?.evalMs ? `${Math.round(resultB.evalMs)}ms` : '--'}</strong></span>
+                      <span>SPEED: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultB?.tokensPerSec ? `${Math.round(resultB.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
+                      <span>TOTAL: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultB?.latencyMs ? (resultB.latencyMs >= 1000 ? `${(resultB.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultB.latencyMs)}ms`) : '--'}</strong></span>
                     </div>
                   </div>
 
                   {/* Column B Output Terminal */}
                   <div style={{ padding: '10px', height: '220px', overflowY: 'auto' }} className="font-mono">
-                    <div style={{ fontSize: '0.625rem', color: '#64748b', marginBottom: '6px' }}>
+                    <div style={{ fontSize: '0.625rem', color: 'var(--mp-text-muted)', marginBottom: '6px' }}>
                       {resultB ? `--- [INFERENCE COMPLETED IN ${Math.round(resultB.latencyMs)}ms] ---` : '--- [READY FOR INFERENCE] ---'}
                     </div>
-                    <pre style={{ margin: 0, fontSize: '0.6875rem', color: '#cbd5e1', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>
+                    <pre style={{ margin: 0, fontSize: '0.6875rem', color: 'var(--mp-text-secondary)', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>
 {resultB?.content || 'Click "Run Inference" to execute prompt against this model...'}
                     </pre>
                   </div>
 
                   {/* Column B Footer */}
-                  <div style={{ padding: '6px 10px', borderTop: '1px solid #1c212d', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.625rem', color: '#64748b' }} className="font-mono">
+                  <div style={{ padding: '6px 10px', borderTop: '1px solid var(--mp-border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.625rem', color: 'var(--mp-text-muted)' }} className="font-mono">
                     <span>Target: {modelB}</span>
                     <button
                       onClick={() => {
@@ -544,7 +529,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                         setCopiedOutputB(true);
                         setTimeout(() => setCopiedOutputB(false), 2000);
                       }}
-                      style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--mp-text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
                     >
                       {copiedOutputB ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
                       <span>{copiedOutputB ? 'Copied' : 'Copy'}</span>
@@ -556,10 +541,10 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
           </div>
 
           {/* Bottom Diagnostics Strip */}
-          <div style={{ marginTop: '14px', borderTop: '1px solid #1c212d', paddingTop: '10px' }} className="font-mono">
+          <div style={{ marginTop: '14px', borderTop: '1px solid var(--mp-border-subtle)', paddingTop: '10px' }} className="font-mono">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.6875rem', marginBottom: '6px' }}>
-              <span style={{ color: '#cbd5e1', fontWeight: 600 }}>Latency vs Throughput Differential</span>
-              <span style={{ color: '#10b981' }}>
+              <span style={{ color: 'var(--mp-text-secondary)', fontWeight: 600 }}>Latency vs Throughput Differential</span>
+              <span style={{ color: 'var(--mp-green)' }}>
                 {resultA && resultB 
                   ? (resultA.latencyMs < resultB.latencyMs 
                       ? `${modelA} is ${(resultB.latencyMs / (resultA.latencyMs || 1)).toFixed(1)}x faster` 
@@ -571,35 +556,35 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
             {/* Differential Dual Progress Bars */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '8px' }}>
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: '#64748b', marginBottom: '2px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: 'var(--mp-text-muted)', marginBottom: '2px' }}>
                   <span>{modelA}</span>
-                  <span style={{ color: '#f97316' }}>
+                  <span style={{ color: 'var(--mp-orange)' }}>
                     {resultA ? `${resultA.tokensPerSec ? Math.round(resultA.tokensPerSec) : 0} t/s (${Math.round(resultA.latencyMs)}ms)` : '--'}
                   </span>
                 </div>
-                <div style={{ height: '4px', background: '#1c212d', borderRadius: '2px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(100, Math.max(5, (resultA?.tokensPerSec || 0) / 2))}%`, height: '100%', background: '#f97316' }} />
+                <div style={{ height: '4px', background: 'var(--mp-border-subtle)', borderRadius: '2px', overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.min(100, Math.max(5, (resultA?.tokensPerSec || 0) / 2))}%`, height: '100%', background: 'var(--mp-orange)' }} />
                 </div>
               </div>
 
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: '#64748b', marginBottom: '2px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: 'var(--mp-text-muted)', marginBottom: '2px' }}>
                   <span>{modelB}</span>
-                  <span style={{ color: '#10b981' }}>
+                  <span style={{ color: 'var(--mp-green)' }}>
                     {resultB ? `${resultB.tokensPerSec ? Math.round(resultB.tokensPerSec) : 0} t/s (${Math.round(resultB.latencyMs)}ms)` : '--'}
                   </span>
                 </div>
-                <div style={{ height: '4px', background: '#1c212d', borderRadius: '2px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.min(100, Math.max(5, (resultB?.tokensPerSec || 0) / 2))}%`, height: '100%', background: '#10b981' }} />
+                <div style={{ height: '4px', background: 'var(--mp-border-subtle)', borderRadius: '2px', overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.min(100, Math.max(5, (resultB?.tokensPerSec || 0) / 2))}%`, height: '100%', background: 'var(--mp-green)' }} />
                 </div>
               </div>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.625rem', color: '#64748b' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.625rem', color: 'var(--mp-text-muted)' }}>
               <span>
-                Payload: {totalTokens} prompt tokens · Response A: {resultA?.usage?.completionTokens || 0} tokens · Response B: {resultB?.usage?.completionTokens || 0} tokens
+                Payload: ~{totalTokens} est. tokens · Response A: {resultA?.usage?.completionTokens || 0} tokens · Response B: {resultB?.usage?.completionTokens || 0} tokens
               </span>
-              <span>Zero Retention Safe</span>
+              <span>Only telemetry is stored</span>
             </div>
           </div>
         </div>

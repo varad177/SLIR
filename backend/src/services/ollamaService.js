@@ -141,7 +141,12 @@ export class OllamaService {
    */
   getCustomModels(db) {
     try {
-      const rows = db.prepare('SELECT id, model_id, display_name, provider, api_base, api_key, created_at FROM custom_models ORDER BY id DESC').all();
+      const rows = db.prepare(`
+        SELECT id, model_id, display_name, provider, api_base, api_key,
+               context_window, max_output_tokens, input_cost_per_million,
+               output_cost_per_million, timeout_ms, created_at
+        FROM custom_models ORDER BY id DESC
+      `).all();
       return rows.map(r => ({
         id: r.id,
         modelId: r.model_id,
@@ -150,6 +155,11 @@ export class OllamaService {
         apiBase: r.api_base,
         hasApiKey: Boolean(r.api_key && r.api_key.trim().length > 0),
         maskedApiKey: r.api_key ? (r.api_key.length > 8 ? `${r.api_key.slice(0, 4)}...${r.api_key.slice(-4)}` : '••••••••') : '',
+        contextWindow: r.context_window,
+        maxOutputTokens: r.max_output_tokens,
+        inputCostPerMillion: r.input_cost_per_million,
+        outputCostPerMillion: r.output_cost_per_million,
+        timeoutMs: r.timeout_ms,
         createdAt: r.created_at
       }));
     } catch {
@@ -157,10 +167,26 @@ export class OllamaService {
     }
   }
 
+  _nullableInt(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  _nullableFloat(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   /**
    * Adds or updates a user-configured cloud model (e.g. Groq, OpenAI, DeepSeek, vLLM)
    */
-  addCustomModel(db, { modelId, displayName, provider = 'cloud', apiBase, apiKey = '' }) {
+  addCustomModel(db, {
+    modelId, displayName, provider = 'cloud', apiBase, apiKey = '',
+    contextWindow, maxOutputTokens, inputCostPerMillion, outputCostPerMillion,
+    timeoutMs, keepApiKey = false
+  }) {
     if (!modelId || !apiBase) {
       throw new Error('Fields "modelId" and "apiBase" are required');
     }
@@ -168,18 +194,42 @@ export class OllamaService {
     const cleanModelId = modelId.trim();
     const cleanDisplayName = (displayName || cleanModelId).trim();
     const cleanProvider = (provider || 'cloud').trim().toLowerCase();
-    const cleanApiBase = apiBase.trim().replace(/\/+$/, ''); // Strip trailing slashes
-    const cleanApiKey = (apiKey || '').trim();
+    const cleanApiBase = apiBase.trim().replace(/\/+$/, '');
+    const existing = db.prepare('SELECT api_key FROM custom_models WHERE model_id = ?').get(cleanModelId);
+    const preserveKey = keepApiKey === true || apiKey === undefined || apiKey === null;
+    const cleanApiKey = preserveKey
+      ? (existing?.api_key || '')
+      : String(apiKey).trim();
+    const meta = {
+      contextWindow: this._nullableInt(contextWindow),
+      maxOutputTokens: this._nullableInt(maxOutputTokens),
+      inputCostPerMillion: this._nullableFloat(inputCostPerMillion),
+      outputCostPerMillion: this._nullableFloat(outputCostPerMillion),
+      timeoutMs: this._nullableInt(timeoutMs)
+    };
 
     db.prepare(`
-      INSERT INTO custom_models (model_id, display_name, provider, api_base, api_key, created_at)
-      VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+      INSERT INTO custom_models (
+        model_id, display_name, provider, api_base, api_key,
+        context_window, max_output_tokens, input_cost_per_million,
+        output_cost_per_million, timeout_ms, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
       ON CONFLICT(model_id) DO UPDATE SET
         display_name = excluded.display_name,
         provider = excluded.provider,
         api_base = excluded.api_base,
-        api_key = excluded.api_key
-    `).run(cleanModelId, cleanDisplayName, cleanProvider, cleanApiBase, cleanApiKey);
+        api_key = excluded.api_key,
+        context_window = excluded.context_window,
+        max_output_tokens = excluded.max_output_tokens,
+        input_cost_per_million = excluded.input_cost_per_million,
+        output_cost_per_million = excluded.output_cost_per_million,
+        timeout_ms = excluded.timeout_ms
+    `).run(
+      cleanModelId, cleanDisplayName, cleanProvider, cleanApiBase, cleanApiKey,
+      meta.contextWindow, meta.maxOutputTokens, meta.inputCostPerMillion,
+      meta.outputCostPerMillion, meta.timeoutMs
+    );
 
     return {
       success: true,
@@ -188,9 +238,147 @@ export class OllamaService {
         displayName: cleanDisplayName,
         provider: cleanProvider,
         apiBase: cleanApiBase,
-        hasApiKey: Boolean(cleanApiKey)
+        hasApiKey: Boolean(cleanApiKey),
+        ...meta
       }
     };
+  }
+
+  /**
+   * Updates an existing custom model. Omitting apiKey preserves the stored key.
+   */
+  updateCustomModel(db, modelId, fields = {}) {
+    const existing = db.prepare('SELECT * FROM custom_models WHERE model_id = ?').get(modelId);
+    if (!existing) {
+      const err = new Error('Model not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const displayName = fields.displayName !== undefined
+      ? String(fields.displayName).trim() || existing.display_name
+      : existing.display_name;
+    const provider = fields.provider !== undefined
+      ? String(fields.provider).trim().toLowerCase() || existing.provider
+      : existing.provider;
+    const apiBase = fields.apiBase !== undefined
+      ? String(fields.apiBase).trim().replace(/\/+$/, '')
+      : existing.api_base;
+    if (!apiBase) {
+      const err = new Error('apiBase must be a non-empty URL');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const apiKey = fields.keepApiKey === true || fields.apiKey === undefined || fields.apiKey === null
+      ? (existing.api_key || '')
+      : String(fields.apiKey).trim();
+
+    db.prepare(`
+      UPDATE custom_models SET
+        display_name = ?, provider = ?, api_base = ?, api_key = ?,
+        context_window = ?, max_output_tokens = ?, input_cost_per_million = ?,
+        output_cost_per_million = ?, timeout_ms = ?
+      WHERE model_id = ?
+    `).run(
+      displayName, provider, apiBase, apiKey,
+      this._nullableInt(fields.contextWindow ?? existing.context_window),
+      this._nullableInt(fields.maxOutputTokens ?? existing.max_output_tokens),
+      this._nullableFloat(fields.inputCostPerMillion ?? existing.input_cost_per_million),
+      this._nullableFloat(fields.outputCostPerMillion ?? existing.output_cost_per_million),
+      this._nullableInt(fields.timeoutMs ?? existing.timeout_ms),
+      modelId
+    );
+
+    return {
+      success: true,
+      model: this.getCustomModels(db).find((m) => m.modelId === modelId)
+    };
+  }
+
+  /**
+   * Sends a minimal OpenAI-compatible chat request to verify endpoint, key,
+   * model id, and latency. Expected provider failures are returned, not thrown,
+   * so the UI can show actionable diagnostics.
+   */
+  async testModelConnection({ apiBase, apiKey, modelId, timeoutMs = 15000 }) {
+    if (!apiBase || !modelId) {
+      return { ok: false, errorType: 'validation', message: 'API base URL and model ID are required.' };
+    }
+
+    const base = String(apiBase).trim().replace(/\/+$/, '');
+    const timeout = Math.max(2000, Math.min(Number(timeoutMs) || 15000, 60000));
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const startedAt = performance.now();
+
+    try {
+      const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
+          max_tokens: 8,
+          temperature: 0
+        }),
+        signal: AbortSignal.timeout(timeout)
+      });
+      const latencyMs = Math.round((performance.now() - startedAt) * 10) / 10;
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        let errorType = 'upstream_error';
+        if (res.status === 401 || res.status === 403) errorType = 'auth';
+        else if (res.status === 404) errorType = 'not_found';
+        else if (res.status === 429) errorType = 'rate_limit';
+        else if (res.status >= 400 && res.status < 500) errorType = 'invalid_request';
+        return {
+          ok: false,
+          httpStatus: res.status,
+          latencyMs,
+          errorType,
+          message: body.slice(0, 500) || `Provider returned HTTP ${res.status}.`
+        };
+      }
+
+      const data = await res.json().catch(() => ({}));
+      const content = data.choices?.[0]?.message?.content || '';
+      return {
+        ok: true,
+        httpStatus: res.status,
+        latencyMs,
+        modelId,
+        message: 'Connection verified.',
+        sample: String(content).slice(0, 120)
+      };
+    } catch (err) {
+      const latencyMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+      return {
+        ok: false,
+        latencyMs,
+        errorType: timedOut ? 'timeout' : 'network',
+        message: timedOut
+          ? `No response within ${Math.round(timeout / 1000)}s.`
+          : (err?.cause?.message || err?.message || 'Could not reach the API endpoint.')
+      };
+    }
+  }
+
+  async testStoredCustomModel(db, modelId, overrides = {}) {
+    const row = db.prepare('SELECT * FROM custom_models WHERE model_id = ?').get(modelId);
+    if (!row) {
+      const err = new Error('Model not found');
+      err.statusCode = 404;
+      throw err;
+    }
+    return this.testModelConnection({
+      apiBase: overrides.apiBase || row.api_base,
+      apiKey: overrides.apiKey !== undefined ? overrides.apiKey : row.api_key,
+      modelId: overrides.modelId || row.model_id,
+      timeoutMs: overrides.timeoutMs || row.timeout_ms || 15000
+    });
   }
 
   /**
@@ -234,6 +422,7 @@ export class OllamaService {
 
     if (customModel) {
       // Direct call to custom cloud model
+      const cloudTimeoutMs = Math.max(5000, customModel.timeout_ms || 30000);
       const url = `${customModel.api_base}/chat/completions`;
       const headers = { 'Content-Type': 'application/json' };
       if (customModel.api_key) {
@@ -252,7 +441,7 @@ export class OllamaService {
         method: 'POST',
         headers,
         body: buildBody(),
-        signal: AbortSignal.timeout(30000)
+        signal: AbortSignal.timeout(cloudTimeoutMs)
       });
 
       if (!res.ok && res.status === 429) {
@@ -265,7 +454,7 @@ export class OllamaService {
             method: 'POST',
             headers,
             body: buildBody(),
-            signal: AbortSignal.timeout(30000)
+            signal: AbortSignal.timeout(cloudTimeoutMs)
           });
         } else {
           throw new Error(`Cloud provider [${customModel.provider}] rate limit exceeded: ${errText}`);
@@ -516,7 +705,7 @@ export class OllamaService {
           messages: [{ role: 'user', content: prompt }],
           temperature
         }),
-        signal: AbortSignal.timeout(30000)
+        signal: AbortSignal.timeout(Math.max(5000, customModel.timeout_ms || 30000))
       });
 
       const duration = Math.round((performance.now() - start) * 10) / 10;

@@ -1,308 +1,385 @@
-import React, { useState } from 'react';
-import { addCustomCloudModel } from '../api/client';
-import { CustomCloudModel } from '../types/analytics';
-import { CloseIcon, AlertTriangleIcon, CheckIcon } from './icons/Icons';
+import React, { useEffect, useState } from 'react';
+import { addCustomCloudModel, updateCustomCloudModel, testModelConnection, testStoredModel } from '../api/client';
+import { CustomCloudModel, ModelTestResult } from '../types/analytics';
+import { CloseIcon, AlertTriangleIcon, CheckIcon, ZapIcon } from './icons/Icons';
 
 interface AddCloudModelModalProps {
   isOpen: boolean;
   onClose: () => void;
   onModelAdded: (newModel: CustomCloudModel) => void;
+  modelToEdit?: CustomCloudModel | null;
 }
 
 const PROVIDER_PRESETS = [
   {
-    name: 'LM Studio (Local: http://localhost:1234/v1)',
-    provider: 'lmstudio',
-    apiBase: 'http://localhost:1234/v1',
-    modelId: 'local-model',
-    displayName: 'LM Studio Local'
-  },
-  {
-    name: 'vLLM (Local / Server: http://localhost:8000/v1)',
-    provider: 'vllm',
-    apiBase: 'http://localhost:8000/v1',
-    modelId: 'meta-llama/Llama-3.1-8B-Instruct',
-    displayName: 'vLLM Local Server'
-  },
-  {
-    name: 'Groq Cloud (Llama 3.3 70B)',
+    name: 'Groq',
     provider: 'groq',
     apiBase: 'https://api.groq.com/openai/v1',
     modelId: 'llama-3.3-70b-versatile',
-    displayName: 'Llama 3.3 70B (Groq)'
+    displayName: 'Llama 3.3 70B (Groq)',
+    contextWindow: 131072
   },
   {
-    name: 'OpenAI (GPT-4o Mini)',
+    name: 'OpenAI',
     provider: 'openai',
     apiBase: 'https://api.openai.com/v1',
     modelId: 'gpt-4o-mini',
-    displayName: 'GPT-4o Mini (OpenAI)'
+    displayName: 'GPT-4o Mini',
+    contextWindow: 128000
   },
   {
-    name: 'DeepSeek (DeepSeek Chat)',
+    name: 'DeepSeek',
     provider: 'deepseek',
     apiBase: 'https://api.deepseek.com/v1',
     modelId: 'deepseek-chat',
-    displayName: 'DeepSeek Chat'
+    displayName: 'DeepSeek Chat',
+    contextWindow: 65536
   },
   {
-    name: 'Custom Endpoint (Local or Remote)',
+    name: 'OpenRouter',
+    provider: 'openrouter',
+    apiBase: 'https://openrouter.ai/api/v1',
+    modelId: 'anthropic/claude-3.5-sonnet',
+    displayName: 'Claude 3.5 Sonnet (OpenRouter)',
+    contextWindow: 200000
+  },
+  {
+    name: 'LM Studio',
+    provider: 'lmstudio',
+    apiBase: 'http://localhost:1234/v1',
+    modelId: 'local-model',
+    displayName: 'LM Studio Local',
+    contextWindow: 32768
+  },
+  {
+    name: 'vLLM / llama.cpp',
+    provider: 'vllm',
+    apiBase: 'http://localhost:8000/v1',
+    modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+    displayName: 'vLLM Local Server',
+    contextWindow: 32768
+  },
+  {
+    name: 'Custom OpenAI-compatible endpoint',
     provider: 'custom',
     apiBase: 'http://localhost:8080/v1',
     modelId: 'custom-model-id',
-    displayName: 'Custom Model'
+    displayName: 'Custom Model',
+    contextWindow: 8192
   }
 ];
+
+const EMPTY_FORM = {
+  displayName: '',
+  modelId: '',
+  provider: 'custom',
+  apiBase: '',
+  apiKey: '',
+  contextWindow: '',
+  maxOutputTokens: '',
+  inputCostPerMillion: '',
+  outputCostPerMillion: '',
+  timeoutMs: '30000'
+};
 
 export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
   isOpen,
   onClose,
-  onModelAdded
+  onModelAdded,
+  modelToEdit = null
 }) => {
-  const [displayName, setDisplayName] = useState<string>(PROVIDER_PRESETS[0].displayName);
-  const [modelId, setModelId] = useState<string>(PROVIDER_PRESETS[0].modelId);
-  const [provider, setProvider] = useState<string>(PROVIDER_PRESETS[0].provider);
-  const [apiBase, setApiBase] = useState<string>(PROVIDER_PRESETS[0].apiBase);
-  const [apiKey, setApiKey] = useState<string>('');
-  const [showKey, setShowKey] = useState<boolean>(false);
-  const [saving, setSaving] = useState<boolean>(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [showKey, setShowKey] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ModelTestResult | null>(null);
+  const isEditing = Boolean(modelToEdit);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setError(null);
+    setTestResult(null);
+    setShowKey(false);
+    setShowAdvanced(false);
+    if (modelToEdit) {
+      setForm({
+        displayName: modelToEdit.displayName || '',
+        modelId: modelToEdit.modelId || '',
+        provider: modelToEdit.provider || 'custom',
+        apiBase: modelToEdit.apiBase || '',
+        apiKey: '',
+        contextWindow: modelToEdit.contextWindow ? String(modelToEdit.contextWindow) : '',
+        maxOutputTokens: modelToEdit.maxOutputTokens ? String(modelToEdit.maxOutputTokens) : '',
+        inputCostPerMillion: modelToEdit.inputCostPerMillion != null ? String(modelToEdit.inputCostPerMillion) : '',
+        outputCostPerMillion: modelToEdit.outputCostPerMillion != null ? String(modelToEdit.outputCostPerMillion) : '',
+        timeoutMs: modelToEdit.timeoutMs ? String(modelToEdit.timeoutMs) : '30000'
+      });
+    } else {
+      setForm(EMPTY_FORM);
+    }
+  }, [isOpen, modelToEdit]);
 
   if (!isOpen) return null;
 
-  const handleApplyPreset = (idx: number) => {
-    const p = PROVIDER_PRESETS[idx];
-    setDisplayName(p.displayName);
-    setModelId(p.modelId);
-    setProvider(p.provider);
-    setApiBase(p.apiBase);
+  const update = (field: keyof typeof EMPTY_FORM, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const applyPreset = (index: number) => {
+    const preset = PROVIDER_PRESETS[index];
+    setForm((prev) => ({
+      ...prev,
+      provider: preset.provider,
+      apiBase: preset.apiBase,
+      modelId: preset.modelId,
+      displayName: preset.displayName,
+      contextWindow: String(preset.contextWindow)
+    }));
+  };
+
+  const validate = () => {
+    if (!form.modelId.trim()) return 'Model identifier is required.';
+    if (!form.apiBase.trim()) return 'Base URL is required.';
+    if (!/^https?:\/\//i.test(form.apiBase.trim())) return 'Base URL must start with http:// or https://.';
+    return null;
+  };
+
+  const handleTest = async () => {
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      if (!form.apiKey.trim() && modelToEdit) {
+        const result = await testStoredModel(modelToEdit.modelId, {
+          apiBase: form.apiBase.trim(),
+          modelId: form.modelId.trim(),
+          timeoutMs: Number(form.timeoutMs) || undefined
+        });
+        setTestResult(result);
+      } else {
+        const result = await testModelConnection({
+          apiBase: form.apiBase.trim(),
+          apiKey: form.apiKey.trim() || undefined,
+          modelId: form.modelId.trim(),
+          timeoutMs: Number(form.timeoutMs) || undefined
+        });
+        setTestResult(result);
+      }
+    } catch (err: any) {
+      setTestResult({ ok: false, message: err.message || 'Connection test failed.' });
+    } finally {
+      setTesting(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!modelId.trim() || !apiBase.trim()) {
-      setError('Model Identifier and Base URL are required.');
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
+    setSaving(true);
+    setError(null);
     try {
-      setSaving(true);
-      setError(null);
       const payload: CustomCloudModel = {
-        modelId: modelId.trim(),
-        displayName: displayName.trim() || modelId.trim(),
-        provider: provider.trim().toLowerCase(),
-        apiBase: apiBase.trim(),
-        apiKey: apiKey.trim()
+        modelId: form.modelId.trim(),
+        displayName: form.displayName.trim() || form.modelId.trim(),
+        provider: form.provider.trim().toLowerCase() || 'custom',
+        apiBase: form.apiBase.trim(),
+        apiKey: form.apiKey.trim() || undefined,
+        keepApiKey: isEditing && !form.apiKey.trim(),
+        contextWindow: form.contextWindow ? Number(form.contextWindow) : null,
+        maxOutputTokens: form.maxOutputTokens ? Number(form.maxOutputTokens) : null,
+        inputCostPerMillion: form.inputCostPerMillion ? Number(form.inputCostPerMillion) : null,
+        outputCostPerMillion: form.outputCostPerMillion ? Number(form.outputCostPerMillion) : null,
+        timeoutMs: form.timeoutMs ? Number(form.timeoutMs) : null
       };
 
-      await addCustomCloudModel(payload);
+      if (isEditing && modelToEdit) {
+        await updateCustomCloudModel(modelToEdit.modelId, payload);
+      } else {
+        await addCustomCloudModel(payload);
+      }
       onModelAdded(payload);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to save cloud model');
+      setError(err.message || 'Failed to save model endpoint.');
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(5, 7, 12, 0.85)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 9999,
-      padding: '16px'
-    }}>
-      <div style={{
-        background: '#12151e',
-        border: '1px solid #1e2433',
-        borderRadius: '8px',
-        width: '100%',
-        maxWidth: '520px',
-        boxShadow: '0 20px 40px -8px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(249, 115, 22, 0.1)',
-        overflow: 'hidden'
-      }}>
-        {/* Modal Header */}
-        <div style={{
-          padding: '16px 20px',
-          borderBottom: '1px solid #1e2433',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          background: 'rgba(255, 255, 255, 0.02)'
-        }}>
+    <div className="mp-modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+      <div className="mp-modal" role="dialog" aria-modal="true" aria-labelledby="model-modal-title">
+        <div className="mp-modal-head">
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#f97316' }} />
-              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#f8fafc', margin: 0, letterSpacing: '-0.01em' }}>
-                Add Model Endpoint
-              </h3>
-            </div>
-            <p style={{ color: '#64748b', fontSize: '0.75rem', margin: '4px 0 0 16px' }}>
-              Connect any local server (LM Studio, vLLM, llama.cpp) or cloud API provider
+            <div className="mp-eyebrow">{isEditing ? 'Edit endpoint' : 'New endpoint'}</div>
+            <h2 id="model-modal-title" className="mp-modal-title">{isEditing ? 'Edit model' : 'Add a model'}</h2>
+            <p className="mp-modal-subtitle">
+              Connect an OpenAI-compatible local server or cloud provider. You can verify the connection before saving.
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="mp-modal-close"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: '#64748b',
-              cursor: 'pointer',
-              padding: '4px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: '4px'
-            }}
-          >
-            <CloseIcon size={16} />
-          </button>
+          <button className="mp-icon-btn" onClick={onClose} disabled={saving} aria-label="Close"><CloseIcon size={16} /></button>
         </div>
 
-        {/* Modal Form */}
-        <form onSubmit={handleSubmit} style={{ padding: '20px' }}>
+        <form onSubmit={handleSubmit} className="mp-modal-body">
           {error && (
-            <div style={{
-              background: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: '#f87171',
-              padding: '10px 14px',
-              borderRadius: '6px',
-              fontSize: '0.75rem',
-              marginBottom: '16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}>
+            <div className="mp-alert error">
               <AlertTriangleIcon size={14} />
               <span>{error}</span>
             </div>
           )}
 
-          {/* Preset Selector */}
-          <div style={{ marginBottom: '14px' }}>
-            <label style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Quick Presets
-            </label>
-            <select
-              onChange={(e) => handleApplyPreset(parseInt(e.target.value, 10))}
-              className="mp-select font-mono"
-              style={{ width: '100%', fontSize: '0.75rem', background: '#090b10', borderColor: '#1e2433' }}
-            >
-              {PROVIDER_PRESETS.map((p, idx) => (
-                <option key={p.name} value={idx}>{p.name}</option>
+          {!isEditing && (
+            <div className="mp-preset-grid">
+              {PROVIDER_PRESETS.map((preset, index) => (
+                <button
+                  key={preset.name}
+                  type="button"
+                  className={`mp-preset ${form.provider === preset.provider && form.apiBase === preset.apiBase ? 'active' : ''}`}
+                  onClick={() => applyPreset(index)}
+                >
+                  <strong>{preset.name}</strong>
+                  <span>{preset.apiBase.replace(/^https?:\/\//, '')}</span>
+                </button>
               ))}
-            </select>
-          </div>
+            </div>
+          )}
 
-          {/* Model Display Name */}
-          <div style={{ marginBottom: '14px' }}>
-            <label style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Display Name
+          <div className="mp-form-grid">
+            <label className="mp-form-field">
+              <span>Display name</span>
+              <input
+                className="mp-input"
+                value={form.displayName}
+                onChange={(e) => update('displayName', e.target.value)}
+                placeholder="e.g. Llama 3.3 70B (Groq)"
+              />
+              <small>Shown in routing menus.</small>
             </label>
-            <input
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="e.g. Llama 3.3 70B (Groq)"
-              className="mp-input font-mono"
-              style={{ height: '36px', padding: '8px 12px', fontSize: '0.8125rem' }}
-              required
-            />
-          </div>
 
-          {/* Model ID */}
-          <div style={{ marginBottom: '14px' }}>
-            <label style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Model Identifier (Passed to API)
+            <label className="mp-form-field">
+              <span>Provider label</span>
+              <input
+                className="mp-input font-mono"
+                value={form.provider}
+                onChange={(e) => update('provider', e.target.value)}
+                placeholder="groq, openai, lmstudio..."
+              />
+              <small>Used for grouping and cost attribution.</small>
             </label>
-            <input
-              type="text"
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              placeholder="e.g. llama-3.3-70b-versatile or gpt-4o-mini"
-              className="mp-input font-mono"
-              style={{ height: '36px', padding: '8px 12px', fontSize: '0.8125rem' }}
-              required
-            />
-          </div>
 
-          {/* Base URL */}
-          <div style={{ marginBottom: '14px' }}>
-            <label style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Base URL (OpenAI-compatible)
+            <label className="mp-form-field mp-form-full">
+              <span>Model identifier</span>
+              <input
+                className="mp-input font-mono"
+                value={form.modelId}
+                onChange={(e) => update('modelId', e.target.value)}
+                placeholder="llama-3.3-70b-versatile"
+                disabled={isEditing}
+                required
+              />
+              <small>
+                {isEditing
+                  ? 'The identifier is fixed while editing. Add a new endpoint to route a different model id.'
+                  : <>Must match the value accepted by the provider's <code>/chat/completions</code> endpoint.</>}
+              </small>
             </label>
-            <input
-              type="url"
-              value={apiBase}
-              onChange={(e) => setApiBase(e.target.value)}
-              placeholder="https://api.groq.com/openai/v1"
-              className="mp-input font-mono"
-              style={{ height: '36px', padding: '8px 12px', fontSize: '0.8125rem' }}
-              required
-            />
+
+            <label className="mp-form-field mp-form-full">
+              <span>Base URL</span>
+              <input
+                className="mp-input font-mono"
+                type="url"
+                value={form.apiBase}
+                onChange={(e) => update('apiBase', e.target.value)}
+                placeholder="https://api.groq.com/openai/v1"
+                required
+              />
+              <small>Include the API version. The gateway appends <code>/chat/completions</code>.</small>
+            </label>
+
+            <label className="mp-form-field mp-form-full">
+              <span>API key {isEditing && <em>optional</em>}</span>
+              <div className="mp-input-row">
+                <input
+                  className="mp-input font-mono"
+                  type={showKey ? 'text' : 'password'}
+                  value={form.apiKey}
+                  onChange={(e) => update('apiKey', e.target.value)}
+                  placeholder={isEditing && modelToEdit?.hasApiKey ? 'Leave blank to keep the stored key' : 'sk-...'}
+                  autoComplete="off"
+                />
+                <button type="button" className="mp-btn mp-btn-ghost" onClick={() => setShowKey((v) => !v)}>
+                  {showKey ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <small>Stored locally in SQLite. Prefer a scoped key with a spending limit.</small>
+            </label>
           </div>
 
-          {/* API Key */}
-          <div style={{ marginBottom: '20px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-              <label style={{ fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                API Key (Optional for local vLLM/LMStudio)
+          <button type="button" className="mp-advanced-toggle" onClick={() => setShowAdvanced((v) => !v)}>
+            {showAdvanced ? 'Hide advanced settings' : 'Advanced settings'}
+          </button>
+
+          {showAdvanced && (
+            <div className="mp-form-grid">
+              <label className="mp-form-field">
+                <span>Context window</span>
+                <input className="mp-input font-mono" type="number" min={1} value={form.contextWindow} onChange={(e) => update('contextWindow', e.target.value)} placeholder="131072" />
               </label>
-              <button
-                type="button"
-                onClick={() => setShowKey(!showKey)}
-                style={{ background: 'none', border: 'none', color: '#f97316', fontSize: '0.6875rem', cursor: 'pointer', fontFamily: 'JetBrains Mono, monospace' }}
-              >
-                {showKey ? 'Hide' : 'Show'}
+              <label className="mp-form-field">
+                <span>Max output tokens</span>
+                <input className="mp-input font-mono" type="number" min={1} value={form.maxOutputTokens} onChange={(e) => update('maxOutputTokens', e.target.value)} placeholder="4096" />
+              </label>
+              <label className="mp-form-field">
+                <span>Input cost / 1M tokens</span>
+                <input className="mp-input font-mono" type="number" min={0} step="0.0001" value={form.inputCostPerMillion} onChange={(e) => update('inputCostPerMillion', e.target.value)} placeholder="0.59" />
+              </label>
+              <label className="mp-form-field">
+                <span>Output cost / 1M tokens</span>
+                <input className="mp-input font-mono" type="number" min={0} step="0.0001" value={form.outputCostPerMillion} onChange={(e) => update('outputCostPerMillion', e.target.value)} placeholder="0.79" />
+              </label>
+              <label className="mp-form-field">
+                <span>Request timeout (ms)</span>
+                <input className="mp-input font-mono" type="number" min={2000} max={60000} value={form.timeoutMs} onChange={(e) => update('timeoutMs', e.target.value)} />
+              </label>
+            </div>
+          )}
+
+          {testResult && (
+            <div className={`mp-test-result ${testResult.ok ? 'ok' : 'error'}`}>
+              <div>
+                <strong>{testResult.ok ? 'Connection verified' : 'Connection failed'}</strong>
+                <p>{testResult.message}</p>
+                {testResult.ok && testResult.sample && <p className="font-mono">Sample: {testResult.sample}</p>}
+              </div>
+              {testResult.latencyMs != null && <span className="font-mono">{Math.round(testResult.latencyMs)} ms</span>}
+            </div>
+          )}
+
+          <div className="mp-modal-footer">
+            <button type="button" className="mp-btn mp-btn-ghost" onClick={handleTest} disabled={testing || saving}>
+              <ZapIcon size={12} />
+              {testing ? 'Testing...' : 'Test connection'}
+            </button>
+            <div className="mp-modal-footer-right">
+              <button type="button" className="mp-btn mp-btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
+              <button type="submit" className="mp-btn mp-btn-primary" disabled={saving}>
+                <CheckIcon size={13} />
+                {saving ? 'Saving...' : isEditing ? 'Save changes' : 'Add model'}
               </button>
             </div>
-            <input
-              type={showKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="gsk_... or sk-..."
-              className="mp-input font-mono"
-              style={{ height: '36px', padding: '8px 12px', fontSize: '0.8125rem' }}
-            />
-          </div>
-
-          {/* Action Buttons */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', paddingTop: '12px', borderTop: '1px solid #1e2433' }}>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="mp-btn-ghost font-mono"
-              style={{ padding: '8px 16px', fontSize: '0.75rem' }}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="mp-btn-primary font-mono"
-              style={{ padding: '8px 20px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-            >
-              {saving ? (
-                <span>Connecting...</span>
-              ) : (
-                <>
-                  <CheckIcon size={14} />
-                  <span>Save & Enable Model</span>
-                </>
-              )}
-            </button>
           </div>
         </form>
       </div>

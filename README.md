@@ -83,26 +83,57 @@ Works out-of-the-box with standard OpenAI SDKs in Python, C# / .NET, JavaScript/
 * **Zero Cloud Lock-in**: Runs entirely offline on your laptop or workstation.
 * **Zero Prompt Retention**: Only anonymous operational telemetry (latency, token counts, model target) is recorded.
 
+### 5. Automatic Per-Application Failover
+Configure an ordered fallback chain for each application under the **Failover** tab. If the primary model returns HTTP 429, HTTP 5xx, times out, or cannot be reached, SLIR tries the next model before returning an error. Requests authenticated with that application's `mp_live_` key use the chain for both `active-model` and explicit model names.
+
+* Up to five fallback models, resolved as custom cloud endpoints first and local Ollama models second.
+* Primary budget hard-blocks remain hard stops; fallback candidates that exceed a budget are skipped.
+* Each client request still produces one request-log row, with failover source, reason, attempt count, and per-attempt trace.
+
 ---
 
 ## 🚀 Quick Start
 
-### Option A: Instant Run with Docker Compose (Recommended)
+### Option A: Run the production image with Docker Compose (Recommended)
 
-Pre-built images are published on Docker Hub. Run the entire stack with zero manual build steps:
+The production Dockerfile bundles the React dashboard and the Node.js gateway into one image. Build and start that single container:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
-> Docker pulls `varad177/slir-backend:latest` and `varad177/slir-frontend:latest` automatically with **zero configuration or `.env` file required**.
-> *(Optional)* To pin to version `v1.0.0`, run: `BACKEND_IMAGE=varad177/slir-backend:v1.0.0 FRONTEND_IMAGE=varad177/slir-frontend:v1.0.0 docker compose up -d`
+> The default `docker-compose.yml` builds `slir-app:latest` from `Dockerfile.prod` with **zero configuration or `.env` file required**.
+> *(Optional)* To use an image that is already built or loaded, run: `SLIR_IMAGE=slir-app:v1.0.0 docker compose up -d`
 
 * **Dashboard (Web UI):** [http://localhost:4100](http://localhost:4100)
 * **SLIR AI Gateway:** [http://localhost:4101/v1](http://localhost:4101/v1)
 
+Both ports reach the same container listener; the dashboard uses relative `/api` and `/v1` requests.
+
 ---
 
-### Option B: Pull Pre-built Images from Docker Hub
+### Option A2: Build and export a single app image
+
+The production Dockerfile builds the frontend and bundles it into the Node.js backend image. Build and export that image:
+
+```bash
+docker build -f Dockerfile.prod -t slir-app:latest .
+docker save -o slir-app.tar slir-app:latest
+```
+
+Copy `slir-app.tar` and `docker-compose.prod.yml` to the other machine, then load and run:
+
+```bash
+docker load -i slir-app.tar
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The dashboard is available at `http://localhost:4100`; the API gateway is at `http://localhost:4101/v1`. SQLite data remains in the `ai_monitor_sqlite_data` Docker volume.
+
+---
+
+### Option B: Pull the split backend and frontend images
+
+The earlier split images remain available on Docker Hub for custom multi-container deployments. The bundled production Compose file uses the single `slir-app` image instead.
 
 ```bash
 # Pull version v1.0.0
@@ -220,7 +251,12 @@ console.log(response.choices[0].message.content);
 | **📦 Models** | Local Ollama inventory, custom endpoints (LM Studio, vLLM, Cloud APIs), 1-click **Set Active**, and **+ Add Model**. |
 | **📋 Request Logs** | Searchable audit log with exact latency decomposition (`load_duration`, `prompt_eval_duration`, `eval_duration`), token counts, and HTTP status. |
 | **📱 Applications** | Multi-tenant app registration and API key generator (e.g. for separating bot traffic from dev scripts). |
+| **💸 Costs & Alerts** | Versioned pricing rules, daily/monthly budgets (notify or hard-block), projected spend, latency percentiles, alert history, and Slack/Discord-compatible webhooks. |
+| **Failover** | Per-application ordered fallback chains, model availability checks, and recent failover events with attempt traces. |
 | **🧪 Playground** | Direct in-browser prompt testing with real-time token throughput metrics. |
+
+The header includes a dark/light theme toggle, and the alert bell links straight
+to unacknowledged budget alerts.
 
 ---
 
@@ -237,6 +273,24 @@ console.log(response.choices[0].message.content);
 # Example: Run on custom host ports without any .env file
 SLIR_DASHBOARD_PORT=5000 SLIR_GATEWAY_PORT=5001 docker compose up -d
 ```
+
+### 🌐 Gateway Connection URLs
+
+The dashboard automatically detects the best gateway URL based on how you access it:
+
+* **From your machine (IDE, terminal, scripts)**: `http://localhost:4101/v1`
+* **From another Docker container on the same host**: `http://host.docker.internal:4101/v1`
+* **From a service in the same Docker Compose project**: `http://app:4101/v1`
+
+The dashboard shows the appropriate URL and lets you switch between them with a single click. No manual configuration required.
+
+For production deployments behind a reverse proxy, custom domain, or fixed IP, you can set a fixed public URL:
+
+```bash
+SLIR_PUBLIC_BASE_URL=https://ai.example.com/v1 docker compose up -d
+```
+
+When set, this URL becomes the single source of truth for all generated code snippets and copy buttons.
 
 ---
 

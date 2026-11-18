@@ -94,9 +94,12 @@ function generateCSSVariables(): Record<string, string> {
 const cssVariables = generateCSSVariables();
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // The dashboard is designed dark-first (components hard-code light text
-  // colors), so always boot into dark instead of following the OS setting.
-  const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
+  // Dark remains the default for first-time users, but the toggle choice is
+  // persisted so light mode survives reloads.
+  const [theme, setThemeState] = useState<'dark' | 'light'>(() => {
+    if (typeof window === 'undefined') return 'dark';
+    return window.localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
+  });
   const [reducedMotion, setReducedMotion] = useState(false);
 
   useEffect(() => {

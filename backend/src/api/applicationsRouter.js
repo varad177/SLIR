@@ -1,6 +1,41 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
+const MAX_FALLBACK_MODELS = 5;
+
+function parseFallbackModels(value) {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.filter((model) => typeof model === 'string' && model.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
+function validateFallbackModels(value) {
+  if (!Array.isArray(value)) {
+    return { error: 'fallbackModels must be an array of model IDs' };
+  }
+
+  const models = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !entry.trim()) {
+      return { error: 'fallbackModels must contain non-empty model IDs' };
+    }
+    const model = entry.trim().replace(/^ollama\//, '');
+    if (model === 'active-model') {
+      return { error: 'fallbackModels cannot contain the active-model alias' };
+    }
+    if (!models.includes(model)) models.push(model);
+  }
+
+  if (models.length > MAX_FALLBACK_MODELS) {
+    return { error: `fallbackModels cannot contain more than ${MAX_FALLBACK_MODELS} models` };
+  }
+
+  return { models };
+}
+
 /**
  * Applications & Virtual API Keys Management Router
  */
@@ -19,6 +54,8 @@ export function createApplicationsRouter(db, analyticsService) {
           a.description,
           a.api_key AS apiKey,
           COALESCE(a.default_model, 'active-model') AS defaultModel,
+          COALESCE(a.failover_enabled, 0) AS failoverEnabled,
+          COALESCE(a.fallback_models, '[]') AS fallbackModels,
           a.created_at AS createdAt,
           COUNT(u.id) AS totalRequests,
           COALESCE(SUM(CASE WHEN u.status = 'failure' THEN 1 ELSE 0 END), 0) AS failedRequests,
@@ -41,8 +78,9 @@ export function createApplicationsRouter(db, analyticsService) {
           apiKey: key,
           maskedApiKey: masked,
           defaultModel: app.defaultModel,
-          baseUrl: 'http://localhost:4101/v1',
-          gatewayUrl: 'http://localhost:4101/v1',
+          routingMode: app.defaultModel === 'active-model' ? 'global' : 'pinned',
+          failoverEnabled: Boolean(app.failoverEnabled),
+          fallbackModels: parseFallbackModels(app.fallbackModels),
           createdAt: app.createdAt,
           totalRequests: app.totalRequests,
           failedRequests: app.failedRequests,
@@ -68,9 +106,22 @@ export function createApplicationsRouter(db, analyticsService) {
    */
   router.post('/', (req, res) => {
     try {
-      const { name, description, defaultModel = 'active-model' } = req.body;
+      const {
+        name,
+        description,
+        defaultModel = 'active-model',
+        failoverEnabled = false,
+        fallbackModels = []
+      } = req.body;
       if (!name || !name.trim()) {
         return res.status(400).json({ error: 'Application name is required' });
+      }
+      if (typeof failoverEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'failoverEnabled must be a boolean' });
+      }
+      const fallbackValidation = validateFallbackModels(fallbackModels);
+      if (fallbackValidation.error) {
+        return res.status(400).json({ error: fallbackValidation.error });
       }
 
       const cleanName = name.trim();
@@ -81,9 +132,22 @@ export function createApplicationsRouter(db, analyticsService) {
       const now = new Date().toISOString();
 
       db.prepare(`
-        INSERT INTO applications (id, name, description, api_key, default_model, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(id, cleanName, description ? description.trim() : null, apiKey, defaultModel.trim(), now, now);
+        INSERT INTO applications (
+          id, name, description, api_key, default_model,
+          failover_enabled, fallback_models, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        cleanName,
+        description ? description.trim() : null,
+        apiKey,
+        defaultModel.trim(),
+        failoverEnabled ? 1 : 0,
+        JSON.stringify(fallbackValidation.models),
+        now,
+        now
+      );
 
       res.status(201).json({
         success: true,
@@ -94,8 +158,8 @@ export function createApplicationsRouter(db, analyticsService) {
           apiKey,
           maskedApiKey: `${apiKey.slice(0, 10)}••••••••${apiKey.slice(-4)}`,
           defaultModel,
-          baseUrl: 'http://localhost:4101/v1',
-          gatewayUrl: 'http://localhost:4101/v1',
+          failoverEnabled,
+          fallbackModels: fallbackValidation.models,
           createdAt: now,
           totalRequests: 0,
           totalTokens: 0,
@@ -110,7 +174,98 @@ export function createApplicationsRouter(db, analyticsService) {
   });
 
   /**
-   * 3. POST /api/applications/:id/regenerate-key - Rotate/regenerate an application's API key
+   * 3. PATCH /api/applications/:id - Update application metadata and routing
+   * Setting defaultModel to "active-model" makes the app follow the global
+   * model; any concrete model id pins that application.
+   */
+  router.patch('/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      const existing = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
+      if (!existing) {
+        return res.status(404).json({ error: 'Application not found' });
+      }
+
+      const updates = [];
+      const values = [];
+
+      if (req.body.name !== undefined) {
+        if (typeof req.body.name !== 'string' || !req.body.name.trim()) {
+          return res.status(400).json({ error: 'Application name must be a non-empty string' });
+        }
+        updates.push('name = ?');
+        values.push(req.body.name.trim());
+      }
+
+      if (req.body.description !== undefined) {
+        if (req.body.description !== null && typeof req.body.description !== 'string') {
+          return res.status(400).json({ error: 'Description must be a string or null' });
+        }
+        updates.push('description = ?');
+        values.push(req.body.description ? req.body.description.trim() : null);
+      }
+
+      if (req.body.defaultModel !== undefined) {
+        if (typeof req.body.defaultModel !== 'string') {
+          return res.status(400).json({ error: 'defaultModel must be a string' });
+        }
+        updates.push('default_model = ?');
+        values.push(req.body.defaultModel.trim() || 'active-model');
+      }
+
+      if (req.body.failoverEnabled !== undefined) {
+        if (typeof req.body.failoverEnabled !== 'boolean') {
+          return res.status(400).json({ error: 'failoverEnabled must be a boolean' });
+        }
+        updates.push('failover_enabled = ?');
+        values.push(req.body.failoverEnabled ? 1 : 0);
+      }
+
+      if (req.body.fallbackModels !== undefined) {
+        const fallbackValidation = validateFallbackModels(req.body.fallbackModels);
+        if (fallbackValidation.error) {
+          return res.status(400).json({ error: fallbackValidation.error });
+        }
+        updates.push('fallback_models = ?');
+        values.push(JSON.stringify(fallbackValidation.models));
+      }
+
+      if (updates.length === 0) {
+        return res.status(400).json({ error: 'No supported fields were provided' });
+      }
+
+      updates.push('updated_at = ?');
+      values.push(new Date().toISOString(), id);
+      db.prepare(`UPDATE applications SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+      const updated = db.prepare(`
+        SELECT id, name, description, api_key AS apiKey,
+               COALESCE(default_model, 'active-model') AS defaultModel,
+               COALESCE(failover_enabled, 0) AS failoverEnabled,
+               COALESCE(fallback_models, '[]') AS fallbackModels,
+               created_at AS createdAt, updated_at AS updatedAt
+        FROM applications WHERE id = ?
+      `).get(id);
+
+      const key = updated.apiKey || '';
+      res.json({
+        success: true,
+        application: {
+          ...updated,
+          failoverEnabled: Boolean(updated.failoverEnabled),
+          fallbackModels: parseFallbackModels(updated.fallbackModels),
+          routingMode: updated.defaultModel === 'active-model' ? 'global' : 'pinned',
+          maskedApiKey: key.length > 10 ? `${key.slice(0, 10)}••••••••${key.slice(-4)}` : '••••••••'
+        }
+      });
+    } catch (err) {
+      console.error('[APPS-API] Failed to update application:', err);
+      res.status(500).json({ error: 'Failed to update application' });
+    }
+  });
+
+  /**
+   * 4. POST /api/applications/:id/regenerate-key - Rotate/regenerate an application's API key
    */
   router.post('/:id/regenerate-key', (req, res) => {
     try {
@@ -141,7 +296,7 @@ export function createApplicationsRouter(db, analyticsService) {
   });
 
   /**
-   * 4. DELETE /api/applications/:id - Delete an application
+   * 5. DELETE /api/applications/:id - Delete an application
    */
   router.delete('/:id', (req, res) => {
     try {

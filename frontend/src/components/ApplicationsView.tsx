@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { ApplicationItem } from '../types/analytics';
-import { fetchApplications, deleteApplication, regenerateAppKey } from '../api/client';
+import { fetchApplications, deleteApplication, regenerateAppKey, updateApplication } from '../api/client';
 import { CreateAppModal } from './CreateAppModal';
 import { ConfirmModal } from './ConfirmModal';
+import { GatewayConnectionCard } from './GatewayConnectionCard';
+import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   CopyIcon,
   CheckIcon,
@@ -34,12 +36,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [activeCodeTab, setActiveCodeTab] = useState<'python' | 'csharp' | 'node' | 'curl'>('python');
-  const [envMode, setEnvMode] = useState<'host' | 'docker'>('docker');
+  const [gatewayBaseUrl, setGatewayBaseUrl] = useState(getBrowserGatewayBaseUrl());
 
   // Confirmation Modals State
   const [appToDelete, setAppToDelete] = useState<ApplicationItem | null>(null);
   const [appToRotateKey, setAppToRotateKey] = useState<ApplicationItem | null>(null);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
+  const [routingSaving, setRoutingSaving] = useState<boolean>(false);
+  const [routingFeedback, setRoutingFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     if (applications) {
@@ -103,10 +107,31 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
     }
   };
 
+  const handleRoutingChange = async (app: ApplicationItem, defaultModel: string) => {
+    setRoutingSaving(true);
+    setRoutingFeedback(null);
+    try {
+      await updateApplication(app.id, { defaultModel });
+      const updated = apps.map((candidate) => candidate.id === app.id
+        ? { ...candidate, defaultModel, routingMode: defaultModel === 'active-model' ? 'global' as const : 'pinned' as const }
+        : candidate);
+      setApps(updated);
+      setSelectedApp((prev) => prev && prev.id === app.id ? { ...prev, defaultModel } : prev);
+      setRoutingFeedback(defaultModel === 'active-model'
+        ? `${app.name} now follows the global model.`
+        : `${app.name} pinned to ${defaultModel}.`);
+      onApplicationsChange?.();
+      setTimeout(() => setRoutingFeedback(null), 4000);
+    } catch (err: any) {
+      setRoutingFeedback(err.message || 'Failed to update routing.');
+    } finally {
+      setRoutingSaving(false);
+    }
+  };
+
   const current = selectedApp || (apps.length > 0 ? apps[0] : null);
-  const currentKey = current ? current.apiKey : 'mp_live_your_key_here';
-  const activeBaseUrl = envMode === 'docker' ? 'http://host.docker.internal:4101/v1' : 'http://localhost:4101/v1';
-  const currentBaseUrl = activeBaseUrl;
+  const currentKey = current?.apiKey && revealedKey ? current.apiKey : '<your-application-key>';
+  const currentBaseUrl = gatewayBaseUrl;
   const currentModel = current ? current.defaultModel : 'active-model';
 
   const totalAppsReqs = apps.reduce((acc, a) => acc + (a.totalRequests || 0), 0);
@@ -181,7 +206,7 @@ console.log(completion.choices[0].message.content);`;
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#f8fafc' }}>
+            <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: 'var(--mp-text-primary)' }}>
               Applications & API Clients
             </h2>
             <span
@@ -189,31 +214,28 @@ console.log(completion.choices[0].message.content);`;
               style={{
                 fontSize: '0.6875rem',
                 background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid #1e2433',
+                border: '1px solid var(--mp-border)',
                 padding: '2px 7px',
                 borderRadius: '4px',
-                color: '#94a3b8'
+                color: 'var(--mp-text-secondary)'
               }}
             >
               {apps.length} listed
             </span>
           </div>
-          <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: '#64748b' }}>
+          <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: 'var(--mp-text-muted)' }}>
             Manage registered client apps, virtual gateway keys, and SDK routing policies.
           </p>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} className="font-mono">
-          <button
-            className="mp-btn-ghost font-mono"
-            style={{ fontSize: '0.75rem', padding: '5px 12px' }}
-          >
-            Global Policies
-          </button>
+          <span className="mp-muted" style={{ fontSize: '0.6875rem' }}>
+            {apps.filter(a => a.defaultModel === 'active-model').length} {apps.filter(a => a.defaultModel === 'active-model').length === 1 ? 'follows' : 'follow'} global · {apps.filter(a => a.defaultModel !== 'active-model').length} pinned
+          </span>
           <button
             onClick={() => setIsCreateModalOpen(true)}
             style={{
-              background: '#f97316',
+              background: 'var(--mp-orange)',
               color: '#0c0e14',
               border: 'none',
               borderRadius: '6px',
@@ -235,61 +257,61 @@ console.log(completion.choices[0].message.content);`;
       <div className="mp-4stat-grid">
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: '#64748b' }}>
+            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
               REGISTERED CLIENTS
             </span>
-            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-green)' }} />
           </div>
-          <div style={{ fontSize: '1.375rem', fontWeight: 800, color: '#f8fafc', margin: '6px 0 2px 0' }} className="font-mono">
-            {apps.length} <span style={{ fontSize: '0.8125rem', color: '#10b981', fontWeight: 600 }}>Active in Cluster</span>
+          <div style={{ fontSize: '1.375rem', fontWeight: 800, color: 'var(--mp-text-primary)', margin: '6px 0 2px 0' }} className="font-mono">
+            {apps.length} <span style={{ fontSize: '0.8125rem', color: 'var(--mp-green)', fontWeight: 600 }}>Active in Cluster</span>
           </div>
-          <div style={{ fontSize: '0.6875rem', color: '#64748b' }} className="font-mono">
+          <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }} className="font-mono">
             0 suspended · 0 standby
           </div>
         </div>
 
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: '#64748b' }}>
+            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
               GATEWAY BASE URL
             </span>
             <button
-              onClick={() => handleCopy('http://localhost:4101/v1', 'url')}
-              style={{ background: 'transparent', border: 'none', color: '#64748b', cursor: 'pointer', padding: 0 }}
+              onClick={() => handleCopy(gatewayBaseUrl, 'url')}
+              style={{ background: 'transparent', border: 'none', color: 'var(--mp-text-muted)', cursor: 'pointer', padding: 0 }}
               title="Copy Base URL"
             >
               {copiedUrl ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
             </button>
           </div>
-          <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#f8fafc', margin: '6px 0 2px 0' }} className="font-mono">
-            http://localhost:4101/v1
+          <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--mp-text-primary)', margin: '6px 0 2px 0' }} className="font-mono">
+            {gatewayBaseUrl}
           </div>
-          <div style={{ fontSize: '0.6875rem', color: '#64748b' }} className="font-mono">
+          <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }} className="font-mono">
             v1 Spec Compliant · HTTP/2 Loopback
           </div>
         </div>
 
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: '#64748b' }}>
+            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
               24H GATEWAY REQS
             </span>
-            <span style={{ fontSize: '0.6875rem', color: '#10b981' }} className="font-mono">
+            <span style={{ fontSize: '0.6875rem', color: 'var(--mp-green)' }} className="font-mono">
               {totalAppsReqs > 0 ? 'Active' : 'Idle'}
             </span>
           </div>
-          <div style={{ fontSize: '1.375rem', fontWeight: 800, color: '#f8fafc', margin: '6px 0 2px 0' }} className="font-mono">
-            {totalAppsReqs.toLocaleString()} <span style={{ fontSize: '0.8125rem', color: '#94a3b8' }}>reqs</span>
+          <div style={{ fontSize: '1.375rem', fontWeight: 800, color: 'var(--mp-text-primary)', margin: '6px 0 2px 0' }} className="font-mono">
+            {totalAppsReqs.toLocaleString()} <span style={{ fontSize: '0.8125rem', color: 'var(--mp-text-secondary)' }}>reqs</span>
           </div>
-          <div style={{ fontSize: '0.6875rem', color: '#64748b' }} className="font-mono">
+          <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }} className="font-mono">
             {totalAppsTokens > 0 ? `${totalAppsTokens.toLocaleString()} tokens total` : 'Ready for traffic'}
           </div>
         </div>
 
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: '#64748b' }}>
-              ACTIVE MODEL TARGET
+            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
+              SELECTED APP ROUTING
             </span>
             <span
               style={{
@@ -297,18 +319,18 @@ console.log(completion.choices[0].message.content);`;
                 background: 'rgba(255, 255, 255, 0.05)',
                 padding: '1px 5px',
                 borderRadius: '3px',
-                color: '#94a3b8'
+                color: 'var(--mp-text-secondary)'
               }}
               className="font-mono"
             >
-              Default
+              {currentModel === 'active-model' ? 'Global' : 'Pinned'}
             </span>
           </div>
-          <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#f8fafc', margin: '6px 0 2px 0' }} className="font-mono">
+          <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--mp-text-primary)', margin: '6px 0 2px 0' }} className="font-mono">
             {currentModel}
           </div>
-          <div style={{ fontSize: '0.6875rem', color: '#10b981' }} className="font-mono">
-            Gateway Managed Target
+          <div style={{ fontSize: '0.6875rem', color: currentModel === 'active-model' ? 'var(--mp-cyan)' : 'var(--mp-orange)' }} className="font-mono">
+            {currentModel === 'active-model' ? 'Follows the global fallback' : 'Pinned to a specific model'}
           </div>
         </div>
       </div>
@@ -318,18 +340,18 @@ console.log(completion.choices[0].message.content);`;
         {/* Left Column: Active Deployments List */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#f8fafc' }}>
+            <span style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--mp-text-primary)' }}>
               Active Deployments
             </span>
-            <span className="font-mono" style={{ fontSize: '0.6875rem', color: '#64748b' }}>
-              Sort: Throughput ↓
+            <span className="font-mono" style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }}>
+              Newest first
             </span>
           </div>
 
           {apps.length === 0 ? (
             <div className="mp-card" style={{ padding: '36px 16px', textAlign: 'center' }}>
-              <div style={{ color: '#f8fafc', fontWeight: 600, fontSize: '0.875rem' }}>No client applications registered</div>
-              <p style={{ margin: '4px 0 12px 0', fontSize: '0.75rem', color: '#64748b' }}>
+              <div style={{ color: 'var(--mp-text-primary)', fontWeight: 600, fontSize: '0.875rem' }}>No client applications registered</div>
+              <p style={{ margin: '4px 0 12px 0', fontSize: '0.75rem', color: 'var(--mp-text-muted)' }}>
                 Register an app to get an API key and base URL.
               </p>
               <button
@@ -346,12 +368,15 @@ console.log(completion.choices[0].message.content);`;
               return (
                 <div
                   key={app.id}
-                  onClick={() => setSelectedApp(app)}
+                  onClick={() => {
+                    setSelectedApp(app);
+                    setRevealedKey(false);
+                  }}
                   className="mp-card"
                   style={{
                     cursor: 'pointer',
-                    background: isSelected ? '#161925' : '#12151e',
-                    borderColor: isSelected ? '#f97316' : '#1e2433',
+                    background: isSelected ? 'var(--mp-bg-subtle)' : 'var(--mp-bg-card)',
+                    borderColor: isSelected ? 'var(--mp-orange)' : 'var(--mp-border)',
                     padding: '12px 14px',
                     transition: 'all 0.15s ease'
                   }}
@@ -364,7 +389,7 @@ console.log(completion.choices[0].message.content);`;
                           height: '24px',
                           borderRadius: '5px',
                           background: 'rgba(249, 115, 22, 0.15)',
-                          color: '#f97316',
+                          color: 'var(--mp-orange)',
                           display: 'grid',
                           placeItems: 'center',
                           fontSize: '0.6875rem',
@@ -375,14 +400,14 @@ console.log(completion.choices[0].message.content);`;
                       </div>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#f8fafc' }}>
+                          <span style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--mp-text-primary)' }}>
                             {app.name}
                           </span>
                           <span
                             className="font-mono"
                             style={{
                               fontSize: '0.625rem',
-                              color: '#10b981',
+                              color: 'var(--mp-green)',
                               background: 'rgba(16, 185, 129, 0.12)',
                               padding: '1px 5px',
                               borderRadius: '3px'
@@ -391,13 +416,13 @@ console.log(completion.choices[0].message.content);`;
                             ● Active
                           </span>
                         </div>
-                        <div className="font-mono" style={{ fontSize: '0.625rem', color: '#64748b' }}>
+                        <div className="font-mono" style={{ fontSize: '0.625rem', color: 'var(--mp-text-muted)' }}>
                           {app.id} · Created {new Date(app.createdAt).toLocaleDateString()}
                         </div>
                       </div>
                     </div>
 
-                    <div className="font-mono" style={{ fontSize: '0.6875rem', color: isSelected ? '#f97316' : '#64748b', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                    <div className="font-mono" style={{ fontSize: '0.6875rem', color: isSelected ? 'var(--mp-orange)' : 'var(--mp-text-muted)', display: 'flex', alignItems: 'center', gap: '3px' }}>
                       <span>Inspecting</span>
                       <ChevronRightIcon size={12} />
                     </div>
@@ -409,45 +434,45 @@ console.log(completion.choices[0].message.content);`;
                       display: 'grid',
                       gridTemplateColumns: 'repeat(4, 1fr)',
                       gap: '8px',
-                      background: '#0c0e14',
-                      border: '1px solid #1a1e2b',
+                      background: 'var(--mp-surface-input)',
+                      border: '1px solid var(--mp-border-subtle)',
                       borderRadius: '6px',
                       padding: '8px 10px'
                     }}
                     className="font-mono"
                   >
                     <div>
-                      <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>MODEL ALIAS</div>
-                      <div style={{ fontSize: '0.6875rem', color: '#cbd5e1', fontWeight: 600, marginTop: '1px' }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>MODEL ALIAS</div>
+                      <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-secondary)', fontWeight: 600, marginTop: '1px' }}>
                         {app.defaultModel}
                       </div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>24H REQS</div>
-                      <div style={{ fontSize: '0.6875rem', color: '#f8fafc', fontWeight: 700, marginTop: '1px' }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>24H REQS</div>
+                      <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-primary)', fontWeight: 700, marginTop: '1px' }}>
                         {app.totalRequests ? app.totalRequests.toLocaleString() : '0'}
                       </div>
-                      <div style={{ fontSize: '0.5625rem', color: app.failedRequests && app.failedRequests > 0 ? '#f43f5e' : '#10b981' }}>
+                      <div style={{ fontSize: '0.5625rem', color: app.failedRequests && app.failedRequests > 0 ? 'var(--mp-red)' : 'var(--mp-green)' }}>
                         {app.totalRequests > 0
                           ? `${Math.round(((app.totalRequests - (app.failedRequests || 0)) / app.totalRequests) * 100)}% ok`
                           : 'No Traffic'}
                       </div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>TOKENS</div>
-                      <div style={{ fontSize: '0.6875rem', color: '#f8fafc', fontWeight: 700, marginTop: '1px' }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>TOKENS</div>
+                      <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-primary)', fontWeight: 700, marginTop: '1px' }}>
                         {app.totalTokens ? app.totalTokens.toLocaleString() : '0'}
                       </div>
-                      <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>
                         {app.lastActive ? new Date(app.lastActive).toLocaleDateString() : 'No reqs yet'}
                       </div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>ROUTED COST</div>
-                      <div style={{ fontSize: '0.6875rem', color: '#10b981', fontWeight: 700, marginTop: '1px' }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>ROUTED COST</div>
+                      <div style={{ fontSize: '0.6875rem', color: 'var(--mp-green)', fontWeight: 700, marginTop: '1px' }}>
                         ${app.totalCost ? app.totalCost.toFixed(4) : '0.0000'}
                       </div>
-                      <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>
+                      <div style={{ fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>
                         {app.defaultModel === 'active-model' ? 'Dynamic' : 'Direct'}
                       </div>
                     </div>
@@ -466,14 +491,14 @@ console.log(completion.choices[0].message.content);`;
               justifyContent: 'space-between',
               padding: '10px 4px',
               fontSize: '0.6875rem',
-              color: '#64748b'
+              color: 'var(--mp-text-muted)'
             }}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#10b981' }} />
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'var(--mp-green)' }} />
               All clients authenticate with virtual API keys. Telemetry is tracked per application.
             </span>
-            <span style={{ color: '#38bdf8', cursor: 'pointer' }}>
+            <span style={{ color: 'var(--mp-cyan)', cursor: 'pointer' }}>
               Audit Gateway Logs ↗
             </span>
           </div>
@@ -483,18 +508,18 @@ console.log(completion.choices[0].message.content);`;
         {current && (
           <div className="mp-card" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {/* Inspector Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #1c212d', paddingBottom: '10px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--mp-border-subtle)', paddingBottom: '10px' }}>
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f97316' }} />
-                  <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#f8fafc' }}>
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-orange)' }} />
+                  <span style={{ fontWeight: 700, fontSize: '0.875rem', color: 'var(--mp-text-primary)' }}>
                     Client Inspector
                   </span>
                 </div>
-                <div style={{ fontWeight: 800, fontSize: '1rem', color: '#f8fafc', marginTop: '4px' }}>
+                <div style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--mp-text-primary)', marginTop: '4px' }}>
                   {current.name}
                 </div>
-                <div style={{ fontSize: '0.6875rem', color: '#94a3b8', marginTop: '2px' }}>
+                <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-secondary)', marginTop: '2px' }}>
                   {current.description || 'Registered client application connected to SLIR gateway'}
                 </div>
               </div>
@@ -506,144 +531,97 @@ console.log(completion.choices[0].message.content);`;
                     background: 'rgba(255, 255, 255, 0.05)',
                     padding: '2px 6px',
                     borderRadius: '4px',
-                    color: '#94a3b8'
+                    color: 'var(--mp-text-secondary)'
                   }}
                 >
                   {current.id}
                 </span>
-                <div style={{ fontSize: '0.625rem', color: '#10b981', marginTop: '4px' }}>
+                <div style={{ fontSize: '0.625rem', color: 'var(--mp-green)', marginTop: '4px' }}>
                   Live Routing
                 </div>
               </div>
             </div>
 
             {/* Virtual Gateway Key Card */}
-            <div style={{ background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', padding: '10px' }} className="font-mono">
+            <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', padding: '10px' }} className="font-mono">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: '#64748b' }}>
+                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
                   VIRTUAL GATEWAY KEY
                 </span>
-                <span style={{ fontSize: '0.625rem', color: '#94a3b8' }}>
-                  Scope: Read & Execute
+                <span style={{ fontSize: '0.625rem', color: 'var(--mp-text-secondary)' }}>
+                  Hidden until revealed
                 </span>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#12151e', border: '1px solid #1a1e2b', padding: '6px 8px', borderRadius: '4px' }}>
-                <span style={{ flex: 1, fontSize: '0.75rem', color: '#10b981', fontWeight: 600, wordBreak: 'break-all' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--mp-bg-card)', border: '1px solid var(--mp-border-subtle)', padding: '6px 8px', borderRadius: '4px' }}>
+                <span style={{ flex: 1, fontSize: '0.75rem', color: 'var(--mp-green)', fontWeight: 600, wordBreak: 'break-all' }}>
                   {revealedKey ? current.apiKey : current.maskedApiKey}
                 </span>
                 <button
                   onClick={() => setRevealedKey(!revealedKey)}
-                  style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 0 }}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--mp-text-secondary)', cursor: 'pointer', padding: 0 }}
                   title={revealedKey ? 'Hide key' : 'Reveal key'}
                 >
                   {revealedKey ? <EyeOffIcon size={13} /> : <EyeIcon size={13} />}
                 </button>
                 <button
                   onClick={() => handleCopy(current.apiKey, 'key')}
-                  style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 0 }}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--mp-text-secondary)', cursor: 'pointer', padding: 0 }}
                   title="Copy Key"
                 >
                   {copiedKey ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
                 </button>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', fontSize: '0.625rem', color: '#64748b' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', fontSize: '0.625rem', color: 'var(--mp-text-muted)' }}>
                 <span>Created: {new Date(current.createdAt).toLocaleDateString()}</span>
                 <button
                   onClick={() => setAppToRotateKey(current)}
-                  style={{ background: 'transparent', border: 'none', color: '#cbd5e1', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--mp-text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
                 >
                   <RotateCwIcon size={11} /> Rotate Key
                 </button>
               </div>
             </div>
 
-            {/* Model Alias Routing Hierarchy */}
-            <div style={{ background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', padding: '10px' }} className="font-mono">
-              <div style={{ fontSize: '0.625rem', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>
-                MODEL ALIAS ROUTING
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontSize: '0.75rem', color: '#f8fafc', fontWeight: 600 }}>
-                  Alias: {current.defaultModel}
+            {/* Model routing for this application */}
+            <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', padding: '10px' }} className="font-mono">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
+                  MODEL ROUTING
                 </span>
-                <span
-                  style={{
-                    fontSize: '0.625rem',
-                    background: 'rgba(249, 115, 22, 0.15)',
-                    border: '1px solid rgba(249, 115, 22, 0.3)',
-                    color: '#f97316',
-                    padding: '1px 6px',
-                    borderRadius: '3px',
-                    fontWeight: 600
-                  }}
-                >
-                  Active Target
+                <span className={`mp-badge ${current.defaultModel === 'active-model' ? 'neutral' : 'warn'}`}>
+                  {current.defaultModel === 'active-model' ? 'Global fallback' : 'Pinned'}
                 </span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.6875rem' }}>
-                <div style={{ color: '#cbd5e1' }}>
-                  ↓ Primary: {current.defaultModel} ({current.defaultModel === 'active-model' ? 'Dynamic Gateway Switcher' : 'Direct Target'})
-                </div>
-                <div style={{ color: '#64748b' }}>
-                  ↳ Base URL: {activeBaseUrl}/chat/completions
-                </div>
+              <select
+                className="mp-select font-mono"
+                value={current.defaultModel}
+                onChange={(e) => handleRoutingChange(current, e.target.value)}
+                disabled={routingSaving}
+                style={{ width: '100%', fontSize: '0.75rem', padding: '5px 8px' }}
+              >
+                <option value="active-model">Follow global fallback</option>
+                {installedModels.filter((model) => model !== 'active-model').map((model) => (
+                  <option key={model} value={model}>Pin to {model}</option>
+                ))}
+                {current.defaultModel !== 'active-model' && !installedModels.includes(current.defaultModel) && (
+                  <option value={current.defaultModel}>{current.defaultModel} (unavailable)</option>
+                )}
+              </select>
+              <div style={{ marginTop: '6px', fontSize: '0.625rem', color: routingFeedback ? 'var(--mp-text-secondary)' : 'var(--mp-text-muted)' }}>
+                {routingFeedback || (current.defaultModel === 'active-model'
+                  ? 'Requests with model "active-model" resolve to the global fallback.'
+                  : `Requests with model "active-model" for this app resolve to ${current.defaultModel}.`)}
               </div>
             </div>
 
-            {/* Application Runtime Environment Toggle */}
-            <div style={{ background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', padding: '10px' }} className="font-mono">
-              <div style={{ fontSize: '0.625rem', fontWeight: 700, color: '#64748b', marginBottom: '6px' }}>
-                APPLICATION RUNTIME ENVIRONMENT
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '6px' }}>
-                <button
-                  type="button"
-                  onClick={() => setEnvMode('docker')}
-                  style={{
-                    background: envMode === 'docker' ? 'rgba(249, 115, 22, 0.15)' : '#090b10',
-                    border: `1px solid ${envMode === 'docker' ? '#f97316' : '#1e2433'}`,
-                    color: envMode === 'docker' ? '#f8fafc' : '#64748b',
-                    padding: '6px 8px',
-                    borderRadius: '5px',
-                    fontSize: '0.6875rem',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                >
-                  <div style={{ fontWeight: 700, color: envMode === 'docker' ? '#f97316' : '#cbd5e1' }}>Inside Docker Container</div>
-                  <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>host.docker.internal:4101</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEnvMode('host')}
-                  style={{
-                    background: envMode === 'host' ? 'rgba(249, 115, 22, 0.15)' : '#090b10',
-                    border: `1px solid ${envMode === 'host' ? '#f97316' : '#1e2433'}`,
-                    color: envMode === 'host' ? '#f8fafc' : '#64748b',
-                    padding: '6px 8px',
-                    borderRadius: '5px',
-                    fontSize: '0.6875rem',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                >
-                  <div style={{ fontWeight: 700, color: envMode === 'host' ? '#f97316' : '#cbd5e1' }}>Host (IDE / Terminal)</div>
-                  <div style={{ fontSize: '0.5625rem', color: '#64748b' }}>localhost:4101</div>
-                </button>
-              </div>
-              <div style={{ fontSize: '0.625rem', color: '#64748b' }}>
-                {envMode === 'docker'
-                  ? '⚡ Containers must use host.docker.internal:4101 to reach outside to the host gateway.'
-                  : '💻 Direct code running on your OS (dotnet run, python) connects via localhost:4101.'}
-              </div>
-            </div>
+            <GatewayConnectionCard value={gatewayBaseUrl} onChange={setGatewayBaseUrl} compact />
 
             {/* Client Integration Code Box */}
-            <div style={{ background: '#0c0e14', border: '1px solid #1e2433', borderRadius: '6px', padding: '10px' }} className="font-mono">
+            <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', padding: '10px' }} className="font-mono">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: '#64748b' }}>
+                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
                   CLIENT INTEGRATION CODE
                 </span>
                 <button
@@ -651,7 +629,7 @@ console.log(completion.choices[0].message.content);`;
                   style={{
                     background: 'transparent',
                     border: 'none',
-                    color: '#38bdf8',
+                    color: 'var(--mp-orange)',
                     cursor: 'pointer',
                     fontSize: '0.6875rem',
                     display: 'flex',
@@ -673,8 +651,8 @@ console.log(completion.choices[0].message.content);`;
                     style={{
                       background: activeCodeTab === tab ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
                       border: '1px solid',
-                      borderColor: activeCodeTab === tab ? '#2b3345' : 'transparent',
-                      color: activeCodeTab === tab ? '#f8fafc' : '#64748b',
+                      borderColor: activeCodeTab === tab ? 'var(--mp-border-strong)' : 'transparent',
+                      color: activeCodeTab === tab ? 'var(--mp-text-primary)' : 'var(--mp-text-muted)',
                       padding: '2px 8px',
                       borderRadius: '4px',
                       fontSize: '0.6875rem',
@@ -686,26 +664,32 @@ console.log(completion.choices[0].message.content);`;
                 ))}
               </div>
 
-              <pre style={{ margin: 0, padding: '8px', background: '#090b10', borderRadius: '4px', fontSize: '0.625rem', color: '#cbd5e1', lineHeight: 1.4, overflowX: 'auto' }}>
+              {!revealedKey && (
+                <div style={{ marginBottom: '6px', fontSize: '0.5625rem', color: 'var(--mp-text-muted)' }}>
+                  Reveal the virtual key above to embed it in this snippet.
+                </div>
+              )}
+
+              <pre style={{ margin: 0, padding: '8px', background: 'var(--mp-surface-input)', borderRadius: '4px', fontSize: '0.625rem', color: 'var(--mp-text-secondary)', lineHeight: 1.4, overflowX: 'auto' }}>
 {getSnippet()}
               </pre>
             </div>
 
             {/* Bottom Actions */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #1c212d', paddingTop: '10px' }} className="font-mono">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--mp-border-subtle)', paddingTop: '10px' }} className="font-mono">
               <button
                 onClick={() => setAppToRotateKey(current)}
                 className="mp-btn-ghost font-mono"
                 style={{ fontSize: '0.6875rem', padding: '4px 10px' }}
               >
-                Revoke Key
+                Rotate key
               </button>
               <button
                 onClick={() => setAppToDelete(current)}
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: '#fb7185',
+                  color: 'var(--mp-red)',
                   fontSize: '0.6875rem',
                   fontWeight: 600,
                   cursor: 'pointer'

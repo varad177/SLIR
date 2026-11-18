@@ -23,8 +23,8 @@ function insertEvent(db, overrides = {}) {
       request_id, trace_id, application_id, provider, model, call_type, status,
       is_streaming, prompt_tokens, completion_tokens, total_tokens, tokens_estimated,
       estimated_cost, cost_status, latency_ms, prompt_eval_duration_ms, eval_duration_ms,
-      load_duration_ms, cache_status, error_type, error_message, timestamp
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      load_duration_ms, cache_status, http_status, client_model, error_type, error_message, timestamp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     overrides.request_id || `req-${Math.random().toString(36).slice(2, 12)}`,
     overrides.trace_id || null,
@@ -45,6 +45,8 @@ function insertEvent(db, overrides = {}) {
     null,
     overrides.load_duration_ms || null,
     overrides.cache_status || null,
+    overrides.http_status ?? null,
+    overrides.client_model ?? null,
     overrides.error_type || null,
     overrides.error_message || null,
     overrides.timestamp || new Date().toISOString()
@@ -59,7 +61,16 @@ test('request search and failure status filters query usage events', () => {
   try {
     initSchema(db, file);
 
-    const successId = insertEvent(db, { request_id: 'req_success_alpha', model: 'qwen2.5:3b' });
+    db.prepare("INSERT INTO applications (id, name, api_key) VALUES ('app_analytics', 'Analytics App', 'key')").run();
+    const successId = insertEvent(db, {
+      request_id: 'req_success_alpha',
+      application_id: 'app_analytics',
+      model: 'qwen2.5:3b',
+      is_streaming: 1,
+      cache_status: 'cache_hit',
+      http_status: 200,
+      client_model: 'active-model'
+    });
     const failId = insertEvent(db, {
       request_id: 'req_missing_beta',
       model: 'qwen2.5:7b',
@@ -81,6 +92,17 @@ test('request search and failure status filters query usage events', () => {
     const byModel = analytics.getRequests({ model: 'qwen2.5:7b', page: 1, limit: 50 });
     assert.equal(byModel.pagination.total, 1);
     assert.equal(byModel.items[0].id, failId);
+
+    const streamed = analytics.getRequests({ streaming: 'true', page: 1, limit: 50 });
+    assert.equal(streamed.pagination.total, 1);
+    assert.equal(streamed.items[0].id, successId);
+    assert.equal(streamed.items[0].application_name, 'Analytics App');
+    assert.equal(streamed.items[0].http_status, 200);
+    assert.equal(streamed.items[0].client_model, 'active-model');
+
+    const cacheHits = analytics.getRequests({ cacheStatus: 'cache_hit', page: 1, limit: 50 });
+    assert.equal(cacheHits.pagination.total, 1);
+    assert.equal(cacheHits.items[0].id, successId);
 
     assert.ok(successId > 0);
   } finally {

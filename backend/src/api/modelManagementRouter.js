@@ -41,7 +41,11 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
 
   router.post('/custom', (req, res) => {
     try {
-      const { modelId, displayName, provider, apiBase, apiKey } = req.body;
+      const {
+        modelId, displayName, provider, apiBase, apiKey, keepApiKey,
+        contextWindow, maxOutputTokens, inputCostPerMillion,
+        outputCostPerMillion, timeoutMs
+      } = req.body;
       if (!modelId || !apiBase) {
         return res.status(400).json({ error: 'Fields "modelId" and "apiBase" are required' });
       }
@@ -51,13 +55,58 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
         displayName,
         provider,
         apiBase,
-        apiKey
+        apiKey,
+        keepApiKey,
+        contextWindow,
+        maxOutputTokens,
+        inputCostPerMillion,
+        outputCostPerMillion,
+        timeoutMs
       });
 
       res.json(result);
     } catch (err) {
       console.error('[MODEL-MGR] Error adding custom model:', err);
-      res.status(500).json({ error: 'Failed to add custom model' });
+      res.status(400).json({ error: err.message || 'Failed to add custom model' });
+    }
+  });
+
+  router.post('/custom/test', async (req, res) => {
+    try {
+      const { apiBase, apiKey, modelId, timeoutMs } = req.body;
+      const result = await ollamaService.testModelConnection({
+        apiBase, apiKey, modelId, timeoutMs
+      });
+      res.json(result);
+    } catch (err) {
+      console.error('[MODEL-MGR] Error testing model connection:', err);
+      res.status(500).json({ ok: false, errorType: 'gateway', message: err.message });
+    }
+  });
+
+  router.post('/custom/:modelId/test', async (req, res) => {
+    try {
+      const result = await ollamaService.testStoredCustomModel(db, req.params.modelId, req.body || {});
+      res.json(result);
+    } catch (err) {
+      if (err?.statusCode === 404) {
+        return res.status(404).json({ ok: false, errorType: 'not_found', message: 'Model not found' });
+      }
+      console.error('[MODEL-MGR] Error testing stored model:', err);
+      res.status(500).json({ ok: false, errorType: 'gateway', message: err.message });
+    }
+  });
+
+  router.patch('/custom/:modelId', (req, res) => {
+    try {
+      const result = ollamaService.updateCustomModel(db, req.params.modelId, req.body || {});
+      res.json(result);
+    } catch (err) {
+      if (err?.statusCode === 404) {
+        return res.status(404).json({ error: 'Model not found' });
+      }
+      console.error('[MODEL-MGR] Error updating custom model:', err);
+      res.status(err?.statusCode || 500).json({ error: err.message || 'Failed to update custom model' });
     }
   });
 

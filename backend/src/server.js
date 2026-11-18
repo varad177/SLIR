@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
@@ -16,10 +17,20 @@ import { createAnalyticsRouter } from './api/analyticsRouter.js';
 import { OllamaService } from './services/ollamaService.js';
 import { createModelManagementRouter } from './api/modelManagementRouter.js';
 import { createApplicationsRouter } from './api/applicationsRouter.js';
+import { createBudgetsRouter } from './api/budgetsRouter.js';
+import { evaluateBudgets, getBlockingBudget } from './services/budgetService.js';
+import { getGatewayPort, getPublicBaseUrl } from './services/gatewayConfig.js';
+import {
+  buildFailoverCandidates,
+  executeModelAttempt,
+  eventModelForTarget,
+  resolveModelTarget
+} from './services/gatewayFailover.js';
 
 // The .env file lives at the ai-usage-monitor project root, one level above
 // backend/, so an explicit path is required for `npm start` run from backend/.
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../wwwroot');
 dotenv.config({ path: process.env.DOTENV_PATH || path.join(projectRoot, '.env') });
 
 const app = express();
@@ -135,6 +146,7 @@ let analyticsService = null;
 let ollamaService = null;
 let initPromise = null;
 let retentionTimer = null;
+let budgetTimer = null;
 
 /**
  * Admin guard for mutating/sensitive endpoints. Every route that creates,
@@ -164,6 +176,24 @@ export function initializeDatabase() {
       app.use('/api/analytics', createAnalyticsRouter(analyticsService, db));
       app.use('/api/models', createModelManagementRouter(ollamaService, analyticsService, db));
       app.use('/api/applications', createApplicationsRouter(db, analyticsService));
+      app.use('/api', createBudgetsRouter(db));
+
+      // Periodically evaluate budget thresholds and dispatch notifications.
+      budgetTimer = setInterval(() => {
+        evaluateBudgets(db).catch(err => console.error('[BUDGETS] Evaluation failed:', err.message));
+      }, 30 * 1000);
+      budgetTimer.unref?.();
+      if (existsSync(webRoot)) {
+        app.use(express.static(webRoot));
+        app.get('*', (req, res, next) => {
+          if (req.path === '/api' || req.path.startsWith('/api/') ||
+              req.path === '/v1' || req.path.startsWith('/v1/')) {
+            return next();
+          }
+          if (!req.accepts('html')) return next();
+          res.sendFile(path.join(webRoot, 'index.html'));
+        });
+      }
       registerFallbackHandlers();
     })().catch(err => {
       initPromise = null; // allow a retry on failure
@@ -206,7 +236,6 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
   let appRow = null;
   let failureInfo = null;
 
-  /** Persists a gateway-served call when it was made with an app key. */
   const persistEvent = (fields) => {
     if (!isDirectClient || !repo) return;
     try {
@@ -215,6 +244,8 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
         applicationId: appId,
         callType: 'chat.completion',
         tokensEstimated: 0,
+        clientModel: typeof req.body?.model === 'string' ? req.body.model : 'active-model',
+        httpStatus: fields.status === 'failure' ? null : 200,
         timestamp: new Date().toISOString(),
         ...fields
       });
@@ -223,7 +254,6 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
     }
   };
 
-  /** Persists a failed gateway call when it was made with an app key. */
   const persistFailure = (details = {}) => {
     persistEvent({
       requestId: `chatcmpl-${crypto.randomUUID()}`,
@@ -243,8 +273,26 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
     });
   };
 
+  const failoverMetadata = (trace, primaryModel, reason, attempts, used, active) => {
+    if (!active) {
+      return {
+        failoverUsed: 0,
+        failoverFromModel: null,
+        failoverReason: null,
+        failoverAttempts: 0,
+        failoverTrace: null
+      };
+    }
+    return {
+      failoverUsed: used ? 1 : 0,
+      failoverFromModel: primaryModel,
+      failoverReason: reason,
+      failoverAttempts: attempts,
+      failoverTrace: JSON.stringify(trace)
+    };
+  };
+
   try {
-    // 0. Application Virtual API Key Authentication & Attribution
     const authHeader = req.headers.authorization;
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -252,13 +300,13 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       if (token && token.startsWith('mp_live_')) {
         if (db) {
           try {
-            appRow = db.prepare('SELECT id, name, default_model FROM applications WHERE api_key = ?').get(token);
+            appRow = db.prepare(
+              'SELECT id, name, default_model, failover_enabled, fallback_models FROM applications WHERE api_key = ?'
+            ).get(token);
           } catch (e) {
             console.error('[GATEWAY] API key lookup failed:', e.message);
           }
         }
-        // An unknown mp_live_ key is a hard 401: silently recording it as an
-        // unattributed "direct client" hides typos and leaked keys.
         if (!appRow) {
           return res.status(401).json({ error: { message: 'Unauthorized: unknown API key' } });
         }
@@ -267,15 +315,11 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       }
     }
 
-    // Reject non-string model values (the gateway has forwarded arrays/objects
-    // before, which then crashed downstream .replace()/toLowerCase calls).
     if (req.body.model !== undefined && req.body.model !== null && typeof req.body.model !== 'string') {
       return res.status(400).json({ error: { message: 'Invalid request: "model" must be a string' } });
     }
 
     const activeModel = (ollamaService && db) ? ollamaService.getActiveModel(db) : 'qwen2.5:3b';
-    // An application can pin its own default model; otherwise fall back to the
-    // globally active model for the "active-model" alias and missing models.
     const appDefaultModel = appRow?.default_model;
     const requestedModel = req.body.model;
     const usesActiveAlias = !requestedModel || requestedModel === 'active-model';
@@ -283,319 +327,157 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       ? (appDefaultModel && appDefaultModel !== 'active-model' ? appDefaultModel : activeModel)
       : requestedModel.replace(/^ollama\//, '');
 
+    const primaryTarget = resolveModelTarget(db, targetModel);
+    const primaryEventModel = eventModelForTarget(primaryTarget);
     failureInfo = {
-      provider: 'ollama',
-      model: `ollama/${targetModel}`,
+      provider: primaryTarget.provider,
+      model: primaryEventModel,
       isStreaming: req.body.stream ? 1 : 0
     };
 
-    // 1. Check if targetModel is a user-configured Cloud Model (e.g. Groq, OpenAI, DeepSeek)
-    let customModel = null;
-    if (db) {
-      try {
-        customModel = db.prepare('SELECT * FROM custom_models WHERE LOWER(TRIM(model_id)) = LOWER(TRIM(?)) OR model_id = ?').get(targetModel, targetModel);
-      } catch {}
+    const blockingBudget = (db && appId) ? getBlockingBudget(db, appId, primaryEventModel) : null;
+    if (blockingBudget) {
+      const message = `Budget "${blockingBudget.name}" exceeded: `
+        + `${Math.round(blockingBudget.usage * 100) / 100} of ${blockingBudget.limit} ${blockingBudget.metric} used this ${blockingBudget.period} (${blockingBudget.percentage}%).`;
+      persistFailure({
+        errorType: 'budget_exceeded',
+        errorMessage: message,
+        httpStatus: 429
+      });
+      return res.status(429).json({
+        error: {
+          message,
+          type: 'budget_exceeded',
+          code: 'budget_exceeded',
+          budget: blockingBudget
+        }
+      });
     }
 
-    if (customModel) {
+    const candidates = isDirectClient
+      ? buildFailoverCandidates(db, targetModel, appRow)
+      : [targetModel];
+    const allowRateLimitRetry = candidates.length === 1;
+    const devConfig = (ollamaService && db) ? ollamaService.getDevConfig(db) : { temperature: 0.7, num_ctx: 4096 };
+    const trace = [];
+    let fallbackAttempts = 0;
+    let firstFailureReason = null;
+    let lastFailure = null;
+    let success = null;
+    let usedFallback = false;
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      const model = candidates[index];
+      const target = resolveModelTarget(db, model);
+      const eventModel = eventModelForTarget(target);
+
+      if (index > 0) {
+        const candidateBudget = (db && appId) ? getBlockingBudget(db, appId, eventModel) : null;
+        if (candidateBudget) {
+          trace.push({
+            model: eventModel,
+            provider: target.provider,
+            outcome: 'budget_exceeded',
+            status: 429,
+            durationMs: 0,
+            message: `Budget "${candidateBudget.name}" exceeded`
+          });
+          continue;
+        }
+        fallbackAttempts += 1;
+      }
+
       failureInfo = {
-        provider: customModel.provider || 'cloud',
-        model: customModel.model_id,
+        provider: target.provider,
+        model: eventModel,
         isStreaming: req.body.stream ? 1 : 0
       };
-      const cloudEndpoint = `${customModel.api_base}/chat/completions`;
-      const cloudHeaders = { 'Content-Type': 'application/json' };
-      if (customModel.api_key) {
-        cloudHeaders['Authorization'] = `Bearer ${customModel.api_key}`;
-      }
 
-      let cloudPayload = {
-        ...req.body,
-        model: customModel.model_id
-      };
-
-      // OpenAI-compatible providers only emit the final usage chunk when asked.
-      if (cloudPayload.stream && !cloudPayload.stream_options) {
-        cloudPayload.stream_options = { include_usage: true };
-      }
-
-      let cloudRes = await fetch(cloudEndpoint, {
-        method: 'POST',
-        headers: cloudHeaders,
-        body: JSON.stringify(cloudPayload),
-        signal: AbortSignal.timeout(60000)
+      const result = await executeModelAttempt(db, model, req.body, {
+        allowRateLimitRetry,
+        devConfig
       });
+      const durationMs = Math.round((Number(result.durationMs) || 0) * 10) / 10;
 
-      // Automatic Fallback 1: If cloud provider rejects json_schema (e.g. strict schema constraints on Groq/DeepSeek),
-      // seamlessly retry using standard json_object mode so the caller never gets a 400 error.
-      if (!cloudRes.ok && cloudRes.status === 400 && cloudPayload.response_format?.type === 'json_schema') {
-        console.log(`[GATEWAY] Cloud provider [${customModel.provider}] rejected json_schema (400), retrying with json_object...`);
-        cloudPayload = {
-          ...cloudPayload,
-          response_format: { type: 'json_object' }
-        };
-        cloudRes = await fetch(cloudEndpoint, {
-          method: 'POST',
-          headers: cloudHeaders,
-          body: JSON.stringify(cloudPayload),
-          signal: AbortSignal.timeout(60000)
+      if (result.ok) {
+        success = { ...result, target, eventModel, durationMs };
+        trace.push({
+          model: eventModel,
+          provider: target.provider,
+          outcome: result.mode === 'stream' ? 'stream_started' : 'success',
+          status: 200,
+          durationMs
         });
+        usedFallback = index > 0;
+        break;
       }
 
-      // Automatic Retry 2: If rate limit (429) hit and wait time is brief (<= 7s), back off and retry once
-      if (!cloudRes.ok && cloudRes.status === 429) {
-        const errorText = await cloudRes.text();
-        const match = errorText.match(/try again in ([\d\.]+)s/i);
-        const waitMs = match ? Math.ceil(parseFloat(match[1]) * 1000) + 400 : 3500;
-        if (waitMs <= 7000) {
-          console.log(`[GATEWAY] Cloud provider [${customModel.provider}] hit 429 rate limit. Backing off ${waitMs}ms and retrying...`);
-          await new Promise(r => setTimeout(r, waitMs));
-          cloudRes = await fetch(cloudEndpoint, {
-            method: 'POST',
-            headers: cloudHeaders,
-            body: JSON.stringify(cloudPayload),
-            signal: AbortSignal.timeout(60000)
-          });
-        } else {
-          persistFailure({
-            errorType: 'upstream_rate_limit',
-            errorMessage: errorText
-          });
-          return res.status(429).json({
-            error: `Cloud provider [${customModel.provider}] rate limit exceeded: ${errorText}`
-          });
-        }
-      }
-
-      if (!cloudRes.ok) {
-        const errorText = await cloudRes.text();
-        persistFailure({
-          errorType: `upstream_${cloudRes.status}`,
-          errorMessage: errorText
-        });
-        return res.status(cloudRes.status).json({
-          error: `Cloud provider [${customModel.provider}] error: ${errorText}`
-        });
-      }
-
-      const latencyMs = Math.round((performance.now() - reqStart) * 10) / 10;
-
-      // Streaming: pipe SSE untouched, then log from the final usage chunk
-      if (req.body.stream && cloudRes.body) {
-        let captured;
-        try {
-          captured = await pipeSseAndCapture(cloudRes, res);
-        } catch (err) {
-          persistFailure({ errorType: 'stream_error', errorMessage: err.message });
-          throw err;
-        }
-        const finalChunk = extractSseUsage(captured) || {};
-        const usage = finalChunk.usage || {};
-        const cached = usage.prompt_tokens_details?.cached_tokens;
-        persistEvent({
-          requestId: finalChunk.id || `chatcmpl-${crypto.randomUUID()}`,
-          provider: customModel.provider || 'cloud',
-          model: customModel.model_id,
-          status: 'success',
-          isStreaming: 1,
-          promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
-          completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
-          totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
-          latencyMs,
-          // Cloud providers do not report these; null means "not reported"
-          promptEvalDurationMs: null,
-          evalDurationMs: null,
-          loadDurationMs: null,
-          cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown'
-        });
-        return;
-      }
-
-      const data = await cloudRes.json();
-
-      // Log direct client call to SQLite
-      if (isDirectClient && repo) {
-        try {
-          const usage = data.usage || {};
-          const cached = usage.prompt_tokens_details?.cached_tokens;
-          repo.saveEvent({
-            requestId: data.id || `chatcmpl-${crypto.randomUUID()}`,
-            traceId: null,
-            applicationId: appId,
-            provider: customModel.provider || 'cloud',
-            model: customModel.model_id,
-            callType: 'chat.completion',
-            status: 'success',
-            isStreaming: 0,
-            promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
-            completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
-            totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
-            tokensEstimated: 0,
-            latencyMs,
-            promptEvalDurationMs: null,
-            evalDurationMs: null,
-            loadDurationMs: null,
-            cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown',
-            timestamp: new Date().toISOString()
-          });
-        } catch (e) {
-          console.error('[GATEWAY] Error persisting direct cloud event:', e.message);
-        }
-      }
-
-      return res.status(200).json(data);
+      lastFailure = result;
+      trace.push({
+        model: eventModel,
+        provider: target.provider,
+        outcome: result.reason,
+        status: result.status,
+        durationMs,
+        message: String(result.message || '').slice(0, 500)
+      });
+      if (index === 0) firstFailureReason = result.reason;
+      if (!result.retryable) break;
     }
 
-    // 2. Otherwise route to local Ollama instance
-    const ollamaUrls = [
-      process.env.OLLAMA_URL,
-      'http://localhost:11434',
-      'http://127.0.0.1:11434',
-      'http://host.docker.internal:11434',
-      'http://ollama:11434'
-    ].filter(Boolean);
+    const failoverActive = usedFallback
+      || fallbackAttempts > 0
+      || trace.some((entry) => entry.outcome === 'budget_exceeded');
 
-    let lastErr = null;
-
-    const devConfig = (ollamaService && db) ? ollamaService.getDevConfig(db) : { temperature: 0.7, num_ctx: 4096 };
-    // For non-streaming requests, prefer Ollama's native /api/chat to capture nanosecond prompt caching timings
-    if (!req.body.stream) {
-      for (const url of ollamaUrls) {
-        try {
-          const chatRes = await fetch(`${url}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: targetModel,
-              messages: req.body.messages || [],
-              stream: false,
-              options: {
-                temperature: req.body.temperature !== undefined ? Number(req.body.temperature) : devConfig.temperature,
-                num_ctx: req.body.num_ctx !== undefined ? Number(req.body.num_ctx) : devConfig.num_ctx
-              }
-            }),
-            signal: AbortSignal.timeout(90000)
-          });
-
-          if (chatRes.ok) {
-            const data = await chatRes.json();
-            const latencyMs = Math.round((performance.now() - reqStart) * 10) / 10;
-            // Ollama reports nanoseconds; `null` when the field is absent
-            const nsToMs = (value) => (Number.isFinite(value) && value > 0 ? Math.round((value / 1e6) * 10) / 10 : null);
-            const promptEvalMs = nsToMs(data.prompt_eval_duration);
-            const evalMs = nsToMs(data.eval_duration);
-            const loadMs = nsToMs(data.load_duration);
-            const cachedCount = Number.isFinite(data.prompt_eval_cached_count) ? data.prompt_eval_cached_count : null;
-            const cacheStatus = cachedCount !== null
-              ? (cachedCount > 0 ? 'cache_hit' : (promptEvalMs !== null && promptEvalMs > 3000 ? 'cold_cache' : 'standard'))
-              : 'unknown';
-
-            const openAiFormat = {
-              id: `chatcmpl-${(typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).substring(2)}`,
-              object: 'chat.completion',
-              created: Math.floor(Date.now() / 1000),
-              model: targetModel,
-              choices: [
-                {
-                  index: 0,
-                  message: data.message || { role: 'assistant', content: '' },
-                  finish_reason: data.done_reason || 'stop'
-                }
-              ],
-              usage: {
-                prompt_tokens: data.prompt_eval_count || 0,
-                completion_tokens: data.eval_count || 0,
-                total_tokens: (data.prompt_eval_count || 0) + (data.eval_count || 0),
-                prompt_tokens_details: {
-                  cached_tokens: data.prompt_eval_cached_count || 0
-                }
-              },
-              timings: {
-                load_duration: data.load_duration || 0,
-                prompt_eval_duration: data.prompt_eval_duration || 0,
-                eval_duration: data.eval_duration || 0,
-                total_duration: data.total_duration || 0
-              },
-              load_duration: data.load_duration || 0,
-              prompt_eval_duration: data.prompt_eval_duration || 0,
-              eval_duration: data.eval_duration || 0
-            };
-
-            // Log direct client call to SQLite
-            const nativePromptTokens = Number.isFinite(data.prompt_eval_count) ? data.prompt_eval_count : null;
-            const nativeCompletionTokens = Number.isFinite(data.eval_count) ? data.eval_count : null;
-            persistEvent({
-              requestId: openAiFormat.id,
-              provider: 'ollama',
-              model: `ollama/${targetModel}`,
-              status: 'success',
-              isStreaming: 0,
-              promptTokens: nativePromptTokens,
-              completionTokens: nativeCompletionTokens,
-              totalTokens: nativePromptTokens !== null && nativeCompletionTokens !== null
-                ? nativePromptTokens + nativeCompletionTokens
-                : null,
-              latencyMs,
-              promptEvalDurationMs: promptEvalMs,
-              evalDurationMs: evalMs,
-              loadDurationMs: loadMs,
-              cacheStatus
-            });
-
-            return res.status(200).json(openAiFormat);
-          } else if (chatRes.status !== 404) {
-            // 404 = model missing locally, fall through to the OpenAI-compatible
-            // endpoint (which reports the same). Any other status is worth noting.
-            lastErr = new Error(`ollama /api/chat returned ${chatRes.status}`);
-          }
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-    }
-
-    // Streaming or fallback to standard /v1/chat/completions
-    const payload = {
-      ...req.body,
-      model: targetModel
-    };
-
-    let upstreamRes = null;
-    for (const url of ollamaUrls) {
-      try {
-        upstreamRes = await fetch(`${url}/v1/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(90000)
-        });
-        if (upstreamRes.ok) break;
-      } catch (err) {
-        lastErr = err;
-      }
-    }
-
-    if (!upstreamRes || !upstreamRes.ok) {
-
-      const upstreamStatus = upstreamRes ? upstreamRes.status : 502;
-      const upstreamBody = upstreamRes ? await upstreamRes.text().catch(() => '') : '';
-      console.error(`[GATEWAY] Upstream model ${targetModel} failed (${upstreamStatus}): ${upstreamBody.slice(0, 300)}`);
+    if (!success) {
+      const status = lastFailure?.status || 502;
+      const reason = lastFailure?.reason;
+      const errorType = reason === 'rate_limit'
+        ? 'upstream_rate_limit'
+        : reason === 'timeout'
+          ? 'upstream_timeout'
+          : reason === 'network_error'
+            ? 'upstream_network'
+            : `upstream_${status}`;
+      const message = lastFailure?.message || 'Upstream request failed';
       persistFailure({
-        errorType: `upstream_${upstreamStatus}`,
-        errorMessage: upstreamBody || lastErr?.message || 'Upstream request failed'
+        errorType,
+        errorMessage: message,
+        httpStatus: status,
+        ...failoverMetadata(
+          trace,
+          primaryEventModel,
+          firstFailureReason,
+          fallbackAttempts,
+          false,
+          failoverActive
+        )
       });
-      return res.status(upstreamStatus).json({
-        error: { message: `Failed to route to active model ${targetModel}`, code: upstreamStatus }
+      return res.status(status).json({
+        error: {
+          message: `Failed to route to model ${failureInfo?.model || primaryEventModel}: ${message}`,
+          code: status,
+          type: errorType
+        }
       });
     }
 
-    // Streaming: forward the SSE stream as-is, then log from the final chunk
-    if (req.body.stream && upstreamRes.body) {
+    const failover = failoverMetadata(
+      trace,
+      primaryEventModel,
+      firstFailureReason,
+      fallbackAttempts,
+      usedFallback,
+      failoverActive
+    );
+
+    if (success.mode === 'stream') {
+      const latencyMs = Math.round((performance.now() - reqStart) * 10) / 10;
       let captured;
       try {
-        captured = await pipeSseAndCapture(upstreamRes, res);
+        captured = await pipeSseAndCapture(success.upstreamRes, res);
       } catch (err) {
-        persistFailure({ errorType: 'stream_error', errorMessage: err.message });
+        persistFailure({ errorType: 'stream_error', errorMessage: err.message, ...failover });
         throw err;
       }
       const finalChunk = extractSseUsage(captured) || {};
@@ -603,45 +485,46 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       const cached = usage.prompt_tokens_details?.cached_tokens;
       persistEvent({
         requestId: finalChunk.id || `chatcmpl-${crypto.randomUUID()}`,
-        provider: 'ollama',
-        model: `ollama/${targetModel}`,
+        provider: success.provider,
+        model: success.eventModel,
         status: 'success',
         isStreaming: 1,
         promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
         completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
         totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
-        latencyMs: Math.round((performance.now() - reqStart) * 10) / 10,
+        latencyMs,
         promptEvalDurationMs: null,
         evalDurationMs: null,
         loadDurationMs: null,
-        cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown'
+        cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown',
+        ...failover
       });
       return;
     }
 
-    const data = await upstreamRes.json();
-    const usage = data.usage || {};
-    const cached = usage.prompt_tokens_details?.cached_tokens;
+    const data = success.responseBody;
     persistEvent({
-      requestId: data.id || `chatcmpl-${crypto.randomUUID()}`,
-      provider: 'ollama',
-      model: `ollama/${targetModel}`,
+      requestId: data?.id || `chatcmpl-${crypto.randomUUID()}`,
+      provider: success.provider,
+      model: success.eventModel,
       status: 'success',
       isStreaming: 0,
-      promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
-      completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
-      totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
+      httpStatus: 200,
+      promptTokens: success.log?.promptTokens ?? null,
+      completionTokens: success.log?.completionTokens ?? null,
+      totalTokens: success.log?.totalTokens ?? null,
       latencyMs: Math.round((performance.now() - reqStart) * 10) / 10,
-      promptEvalDurationMs: null,
-      evalDurationMs: null,
-      loadDurationMs: null,
-      cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown'
+      promptEvalDurationMs: success.log?.promptEvalDurationMs ?? null,
+      evalDurationMs: success.log?.evalDurationMs ?? null,
+      loadDurationMs: success.log?.loadDurationMs ?? null,
+      cacheStatus: success.log?.cacheStatus || 'unknown',
+      ...failover
     });
-    res.status(200).json(data);
+    return res.status(200).json(data);
   } catch (err) {
     console.error('[DYNAMIC-ROUTER] Routing error:', err);
     if (failureInfo) {
-      persistFailure({ errorType: 'gateway_error', errorMessage: err.message });
+      persistFailure({ errorType: 'gateway_error', errorMessage: err.message, httpStatus: 500 });
     }
     if (res.headersSent) {
       if (!res.writableEnded) res.end();
@@ -655,6 +538,13 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
  * Health Check Endpoint ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â reports unhealthy when the DB cannot be reached so
  * container orchestrators do not route traffic to a dead instance.
  */
+app.get('/api/config', (req, res) => {
+  res.json({
+    publicBaseUrl: getPublicBaseUrl(),
+    gatewayPort: getGatewayPort()
+  });
+});
+
 app.get('/api/health', (req, res) => {
   const payload = {
     status: 'ok',
@@ -739,6 +629,7 @@ if (isMain) {
     shuttingDown = true;
     console.log(`[SERVER] ${signal} received, shutting down...`);
     if (retentionTimer) clearInterval(retentionTimer);
+    if (budgetTimer) clearInterval(budgetTimer);
     const done = () => {
       try { if (db) db.close(); } catch { /* already closed */ }
       process.exit(0);

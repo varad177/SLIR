@@ -1,0 +1,9 @@
+.git
+.env
+*.tar
+backend/.env
+backend/data
+backend/node_modules
+frontend/.env
+frontend/dist
+frontend/node_modules

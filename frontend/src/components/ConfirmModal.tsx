@@ -59,8 +59,8 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
         style={{
           width: '100%',
           maxWidth: '460px',
-          background: '#12151e',
-          border: '1px solid #232938',
+          background: 'var(--mp-bg-card)',
+          border: '1px solid var(--mp-border)',
           borderRadius: '10px',
           boxShadow: '0 20px 40px -15px rgba(0, 0, 0, 0.8), 0 0 20px rgba(244, 63, 94, 0.08)',
           overflow: 'hidden'
@@ -73,7 +73,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             alignItems: 'center',
             justifyContent: 'space-between',
             padding: '16px 20px',
-            borderBottom: '1px solid #1c212d',
+            borderBottom: '1px solid var(--mp-border-subtle)',
             background: 'rgba(18, 21, 30, 0.9)'
           }}
         >
@@ -84,14 +84,14 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
                 height: '32px',
                 borderRadius: '8px',
                 background: isDanger ? 'rgba(244, 63, 94, 0.15)' : 'rgba(249, 115, 22, 0.15)',
-                color: isDanger ? '#fb7185' : '#f97316',
+                color: isDanger ? 'var(--mp-red)' : 'var(--mp-orange)',
                 display: 'grid',
                 placeItems: 'center'
               }}
             >
               <AlertTriangleIcon size={16} />
             </div>
-            <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#f8fafc' }}>
+            <span style={{ fontWeight: 700, fontSize: '0.9375rem', color: 'var(--mp-text-primary)' }}>
               {title}
             </span>
           </div>
@@ -101,7 +101,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             style={{
               background: 'transparent',
               border: 'none',
-              color: '#94a3b8',
+              color: 'var(--mp-text-secondary)',
               cursor: 'pointer',
               padding: '4px',
               display: 'grid',
@@ -115,7 +115,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
         {/* Body */}
         <div style={{ padding: '20px' }}>
-          <p style={{ margin: 0, fontSize: '0.875rem', color: '#cbd5e1', lineHeight: 1.5 }}>
+          <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--mp-text-secondary)', lineHeight: 1.5 }}>
             {message}
           </p>
           {subMessage && (
@@ -127,7 +127,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
                 border: '1px solid rgba(244, 63, 94, 0.25)',
                 borderRadius: '6px',
                 fontSize: '0.75rem',
-                color: '#fb7185',
+                color: 'var(--mp-red)',
                 lineHeight: 1.4
               }}
               className="font-mono"
@@ -145,7 +145,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             justifyContent: 'flex-end',
             gap: '10px',
             padding: '14px 20px',
-            borderTop: '1px solid #1c212d',
+            borderTop: '1px solid var(--mp-border-subtle)',
             background: 'rgba(15, 18, 25, 0.8)'
           }}
         >
@@ -154,8 +154,8 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             disabled={loading}
             style={{
               background: 'transparent',
-              border: '1px solid #2b3345',
-              color: '#cbd5e1',
+              border: '1px solid var(--mp-border-strong)',
+              color: 'var(--mp-text-secondary)',
               padding: '7px 16px',
               borderRadius: '6px',
               fontSize: '0.8125rem',

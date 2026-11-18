@@ -32,19 +32,30 @@ OpenAI-compatible gateway and the telemetry writer.
    - A valid key attributes the request to an application.
    - An unknown `mp_live_` key returns `401`.
    - Requests without an application key are proxied but not recorded.
-2. Resolves the target model:
+2. Resolves the primary target model:
    - explicit `model` value, or
    - the application's `default_model`, or
    - the global `active_model` setting for `active-model` / missing model.
-3. If the model matches a row in `custom_models`, forwards to
+3. If the application has failover enabled, builds `[primary, ...fallbackModels]`.
+   Fallback chains are per application, capped at five models, and apply to
+   explicit model requests too. A primary request blocked by a hard budget
+   stops immediately; a fallback candidate blocked by budget is skipped
+   and recorded in the trace.
+4. Executes each candidate in order. The next candidate is tried when the
+   current one returns HTTP 429 or 5xx, times out, or cannot be reached.
+   Non-retryable 4xx responses stop immediately. Streaming failover is only
+   possible before the first response chunk is sent.
+5. If the model matches a row in `custom_models`, forwards to
    `<api_base>/chat/completions` with the stored provider key.
-4. Otherwise forwards to Ollama. Non-streaming calls prefer Ollama's native
+6. Otherwise forwards to Ollama. Non-streaming calls prefer Ollama's native
    `/api/chat` so prompt-cache and eval timings can be recorded; streaming and
    fallback calls use `/v1/chat/completions`.
-5. Records a `usage_events` row for attributed calls:
+7. Records one `usage_events` row per attributed client request:
    - success: token counts, latency, timings, cache status
    - failure: status `failure`, `error_type`, `error_message`, null tokens
-6. Cloud streaming requests add `stream_options.include_usage = true` so the
+   - failover: `failover_used`, `failover_from_model`, `failover_reason`,
+     `failover_attempts`, and a JSON `failover_trace` of each attempt
+8. Cloud streaming requests add `stream_options.include_usage = true` so the
    final SSE chunk carries usage.
 
 Prompts and responses are never persisted. Only operational metadata is stored.
@@ -56,12 +67,20 @@ SQLite in WAL mode with `synchronous = NORMAL`, `foreign_keys = ON`, and a
 
 Core tables:
 
-- `applications` — id, name, description, `api_key`, `default_model`
-- `usage_events` — one row per attributed request, unique `request_id`
+- `applications` — id, name, description, `api_key`, `default_model`,
+  `failover_enabled`, `fallback_models` (ordered JSON array)
+- `usage_events` — one row per attributed request, unique `request_id`, plus
+  failover source/reason/attempt/trace fields
 - `model_pricing` — versioned input/output cost per million tokens
 - `custom_models` — cloud/OpenAI-compatible endpoints and their keys
-- `settings` — `active_model`, setup flags
+- `budgets` — daily/monthly limits on cost, tokens or requests, scoped globally,
+  per application or per model, with `notify` or `block` actions
+- `budget_alerts` — threshold notifications, deduplicated per budget period
+- `settings` — `active_model`, setup flags, alert webhook configuration
 - `schema_migrations` — applied schema versions
+
+Schema version 3 adds the budget tables and indexes over alert history. Version
+4 adds per-application failover settings and request-level failover telemetry.
 
 Key indexes cover timestamp, model, provider, status, and application queries.
 
@@ -94,6 +113,32 @@ A migration error aborts startup. The previous five backups are retained.
    ```
 
    The result is stored as `estimated`. No match means `NULL` / `unknown`.
+
+### Budgets and alerts
+
+`evaluateBudgets()` runs every 30 seconds (and on demand from the API):
+
+- Usage is summed over the current UTC day or month, filtered by the budget's
+  application or model scope.
+- The warning threshold defaults to 80% of the limit; the exceeded threshold is
+  100%. Alerts are written to `budget_alerts` with a unique
+  `(budget_id, period_key, threshold)` key, so each threshold fires once per
+  period.
+- Alerts are always available in-app and are POSTed to the configured webhook
+  when `alerts_webhook_enabled` is true. Payloads include both `text` and
+  `content`, which makes them compatible with Slack and Discord webhooks.
+  Delivery failures are recorded but never block budgeting.
+- `getBlockingBudget()` runs in the gateway after application attribution. Any
+  exceeded budget with `action = 'block'` returns HTTP 429 with
+  `type: "budget_exceeded"` before an upstream provider is contacted. Results
+  are cached for 10 seconds and invalidated on budget changes.
+
+### Observability fields
+
+`/api/analytics/summary` includes nearest-rank latency percentiles (p50, p95,
+p99), TTFT percentiles, prompt-cache hit rate, and a burn-rate / 30-day cost
+projection. `/api/analytics/timeseries` and `/api/analytics/models` expose
+per-bucket and per-model cache statistics plus per-model p95 latency.
 
 ## 5. Retention
 

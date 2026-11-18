@@ -17,13 +17,17 @@ export class UsageRepository {
         status, is_streaming, prompt_tokens, completion_tokens, total_tokens,
         tokens_estimated, estimated_cost, cost_status, latency_ms,
         prompt_eval_duration_ms, eval_duration_ms, load_duration_ms, cache_status,
-        error_type, error_message, timestamp
+        http_status, client_model, error_type, error_message,
+        failover_used, failover_from_model, failover_reason, failover_attempts, failover_trace,
+        timestamp
       ) VALUES (
         @requestId, @traceId, @applicationId, @provider, @model, @callType,
         @status, @isStreaming, @promptTokens, @completionTokens, @totalTokens,
         @tokensEstimated, @estimatedCost, @costStatus, @latencyMs,
         @promptEvalDurationMs, @evalDurationMs, @loadDurationMs, @cacheStatus,
-        @errorType, @errorMessage, @timestamp
+        @httpStatus, @clientModel, @errorType, @errorMessage,
+        @failoverUsed, @failoverFromModel, @failoverReason, @failoverAttempts, @failoverTrace,
+        @timestamp
       )
       ON CONFLICT(request_id) DO NOTHING
     `);
@@ -53,8 +57,15 @@ export class UsageRepository {
       applicationId: null,
       errorType: null,
       errorMessage: null,
+      httpStatus: null,
+      clientModel: null,
       tokensEstimated: 0,
       isStreaming: 0,
+      failoverUsed: 0,
+      failoverFromModel: null,
+      failoverReason: null,
+      failoverAttempts: 0,
+      failoverTrace: null,
       ...event,
       // Preserve `null` timings: they mean "provider did not report this",
       // which is materially different from a measured 0ms.

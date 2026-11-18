@@ -1,14 +1,15 @@
 services:
-  # 1. Collector & Analytics Backend: Node.js Express + SQLite (WAL)
-  backend:
-    image: ${BACKEND_IMAGE:-varad177/slir-backend:latest}
+  # One image serves the dashboard, analytics API, and OpenAI-compatible gateway.
+  app:
+    image: ${SLIR_IMAGE:-slir-app:latest}
     build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: ai_monitor_backend
+      context: .
+      dockerfile: Dockerfile.prod
+    container_name: ai_monitor_app
     restart: unless-stopped
-    # Bound to loopback; the frontend reaches it over the internal network.
+    # Both host ports reach the same listener: 4100 for the dashboard, 4101 for the API.
     ports:
+      - "${SLIR_DASHBOARD_PORT:-4100}:4101"
       - "${SLIR_GATEWAY_PORT:-4101}:4101"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -20,6 +21,7 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:4100,http://localhost:5173}
       - RETENTION_DAYS=${RETENTION_DAYS:-0}
+      - SLIR_PUBLIC_BASE_URL=${SLIR_PUBLIC_BASE_URL:-}
     volumes:
       - sqlite_data:/app/data
     healthcheck:
@@ -33,41 +35,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    networks:
-      - ai_monitor_net
-
-  # 2. Observability Dashboard: React 18 + Vite (Nginx Alpine)
-  frontend:
-    image: ${FRONTEND_IMAGE:-varad177/slir-frontend:latest}
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: ai_monitor_frontend
-    restart: unless-stopped
-    # Bound to loopback; set to "0.0.0.0" to serve the dashboard to the LAN.
-    ports:
-      - "${SLIR_DASHBOARD_PORT:-4100}:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    networks:
-      - ai_monitor_net
 
 volumes:
   sqlite_data:
     name: ai_monitor_sqlite_data
-
-networks:
-  ai_monitor_net:
-    name: ai_monitor_net
-    driver: bridge

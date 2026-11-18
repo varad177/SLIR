@@ -1,36 +1,47 @@
 import React, { useState, useEffect } from 'react';
-import { OllamaModelInfo, CustomCloudModel } from '../types/analytics';
-import { 
-  fetchInstalledModels, 
-  deleteCustomCloudModel, 
-  setActiveModel
+import { OllamaModelInfo, CustomCloudModel, ApplicationItem, ModelTestResult } from '../types/analytics';
+import {
+  fetchInstalledModels,
+  deleteCustomCloudModel,
+  setActiveModel,
+  testStoredModel
 } from '../api/client';
 import { AddCloudModelModal } from './AddCloudModelModal';
 import { ConfirmModal } from './ConfirmModal';
 import {
   SearchIcon,
   CheckIcon,
-  TrashIcon
+  TrashIcon,
+  ZapIcon,
+  PlusIcon
 } from './icons/Icons';
 
 interface ModelsHubViewProps {
   onModelSwitched?: () => void;
   refreshTrigger?: number;
+  applications?: ApplicationItem[];
 }
+
+const normalizeModel = (value?: string | null) => (value || '').replace(/^ollama\//, '').toLowerCase();
 
 export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
   onModelSwitched,
-  refreshTrigger = 0
+  refreshTrigger = 0,
+  applications = []
 }) => {
   const [ollamaModels, setOllamaModels] = useState<OllamaModelInfo[]>([]);
   const [customModels, setCustomModels] = useState<CustomCloudModel[]>([]);
-  const [activeModel, setActiveModelName] = useState<string>('qwen2.5:3b');
+  const [globalModel, setGlobalModel] = useState('qwen2.5:3b');
   const [filterType, setFilterType] = useState<'all' | 'local' | 'cloud'>('all');
-  const [searchFilter, setSearchFilter] = useState<string>('');
-  const [loading, setLoading] = useState<boolean>(true);
-  const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
-  const [switching, setSwitching] = useState<boolean>(false);
+  const [searchFilter, setSearchFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
+  const [modelToEdit, setModelToEdit] = useState<CustomCloudModel | null>(null);
+  const [switching, setSwitching] = useState(false);
   const [modelToDelete, setModelToDelete] = useState<CustomCloudModel | null>(null);
+  const [testingModel, setTestingModel] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, ModelTestResult>>({});
+  const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   const loadModels = async () => {
     try {
@@ -39,10 +50,10 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
       if (modelsRes) {
         setOllamaModels(modelsRes.models || []);
         setCustomModels(modelsRes.customModels || []);
-        if (modelsRes.activeModel) setActiveModelName(modelsRes.activeModel);
+        if (modelsRes.activeModel) setGlobalModel(modelsRes.activeModel);
       }
-    } catch (err: any) {
-      console.error('Failed to load models in ModelsHub:', err);
+    } catch (err) {
+      console.error('Failed to load models:', err);
     } finally {
       setLoading(false);
     }
@@ -52,17 +63,39 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
     loadModels();
   }, [refreshTrigger]);
 
+  const flash = (ok: boolean, message: string) => {
+    setFeedback({ ok, message });
+    setTimeout(() => setFeedback(null), 4000);
+  };
+
   const handleSwitch = async (model: string) => {
+    if (normalizeModel(model) === normalizeModel(globalModel)) return;
+    setSwitching(true);
     try {
-      setSwitching(true);
       await setActiveModel(model);
-      setActiveModelName(model);
-      if (onModelSwitched) onModelSwitched();
+      setGlobalModel(model);
+      flash(true, `Global fallback is now ${model}. Applications pinned to a specific model are unchanged.`);
+      onModelSwitched?.();
       await loadModels();
     } catch (err: any) {
-      alert(`Failed to switch model: ${err.message}`);
+      flash(false, err.message || 'Failed to switch the global model.');
     } finally {
       setSwitching(false);
+    }
+  };
+
+  const handleTestModel = async (model: CustomCloudModel) => {
+    setTestingModel(model.modelId);
+    try {
+      const result = await testStoredModel(model.modelId);
+      setTestResults((prev) => ({ ...prev, [model.modelId]: result }));
+    } catch (err: any) {
+      setTestResults((prev) => ({
+        ...prev,
+        [model.modelId]: { ok: false, message: err.message || 'Connection test failed.' }
+      }));
+    } finally {
+      setTestingModel(null);
     }
   };
 
@@ -70,475 +103,318 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
     if (!modelToDelete) return;
     try {
       await deleteCustomCloudModel(modelToDelete.modelId);
-      setCustomModels(prev => prev.filter(m => m.modelId !== modelToDelete.modelId));
-      if (onModelSwitched) onModelSwitched();
+      setCustomModels((prev) => prev.filter((m) => m.modelId !== modelToDelete.modelId));
+      flash(true, `${modelToDelete.displayName || modelToDelete.modelId} removed.`);
+      onModelSwitched?.();
       await loadModels();
     } catch (err: any) {
-      alert(`Failed to delete cloud model: ${err.message}`);
+      flash(false, err.message || 'Failed to delete model.');
     } finally {
       setModelToDelete(null);
     }
   };
 
+  const pinnedCount = (modelId: string) => applications.filter((app) => app.defaultModel === modelId).length;
   const totalMounted = ollamaModels.length + customModels.length;
-
-  // Active model info
-  const activeCustom = customModels.find(cm => cm.modelId === activeModel);
-  const activeLocal = ollamaModels.find(m => m.name === activeModel || m.name.includes(activeModel));
+  const activeCustom = customModels.find(cm => normalizeModel(cm.modelId) === normalizeModel(globalModel));
+  const activeLocal = ollamaModels.find(m => normalizeModel(m.name) === normalizeModel(globalModel));
   const isCloud = !!activeCustom;
 
-  // Filtered lists
-  const filteredLocal = ollamaModels.filter(m => 
+  const filteredLocal = ollamaModels.filter(m =>
     !searchFilter.trim() || m.name.toLowerCase().includes(searchFilter.toLowerCase())
   );
-  const filteredCloud = customModels.filter(c => 
-    !searchFilter.trim() || c.modelId.toLowerCase().includes(searchFilter.toLowerCase()) || (c.displayName && c.displayName.toLowerCase().includes(searchFilter.toLowerCase()))
+  const filteredCloud = customModels.filter(c =>
+    !searchFilter.trim()
+    || c.modelId.toLowerCase().includes(searchFilter.toLowerCase())
+    || (c.displayName || '').toLowerCase().includes(searchFilter.toLowerCase())
+    || c.provider.toLowerCase().includes(searchFilter.toLowerCase())
   );
 
+  const allTargets = [
+    ...ollamaModels.map(m => ({ id: m.name, label: m.name, group: 'Local' })),
+    ...customModels.map(c => ({ id: c.modelId, label: c.displayName || c.modelId, group: c.provider }))
+  ];
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* 1. Header Bar: Title, Search, Filter Pills & Add Model Button */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+    <div className="mp-models-page">
+      <div className="mp-page-head">
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#f8fafc' }}>
-              Models & Providers
-            </h2>
-            <span
-              className="font-mono"
-              style={{
-                fontSize: '0.6875rem',
-                background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid #1e2433',
-                padding: '2px 7px',
-                borderRadius: '4px',
-                color: '#94a3b8'
-              }}
-            >
-              {totalMounted} Available
-            </span>
-          </div>
-          <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: '#64748b' }}>
-            View local Ollama models, add custom API / server endpoints, and switch your active routing model.
+          <div className="mp-eyebrow">Runtime</div>
+          <h1 className="mp-page-title">Models and providers</h1>
+          <p className="mp-page-subtitle">
+            The global fallback is used by every application set to <code>active-model</code>. Pinned applications keep their own model.
           </p>
         </div>
-
-        {/* Filter & Action Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }} className="font-mono">
-          {/* Search Box */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: '#0c0e14',
-              border: '1px solid #1e2433',
-              borderRadius: '6px',
-              padding: '4px 8px'
-            }}
-          >
-            <span style={{ color: '#64748b' }}>
-              <SearchIcon size={13} />
-            </span>
+        <div className="mp-page-head-actions">
+          <div className="mp-search">
+            <SearchIcon size={13} />
             <input
-              type="text"
-              placeholder="Search models or providers..."
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#f8fafc',
-                fontSize: '0.75rem',
-                outline: 'none',
-                width: '180px'
-              }}
+              placeholder="Search models or providers"
+              aria-label="Search models"
             />
           </div>
-
-          {/* Filter Pills */}
-          <div style={{ display: 'flex', gap: '3px' }}>
-            <button
-              onClick={() => setFilterType('all')}
-              style={{
-                background: filterType === 'all' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
-                border: '1px solid',
-                borderColor: filterType === 'all' ? '#2b3345' : 'transparent',
-                color: filterType === 'all' ? '#f8fafc' : '#64748b',
-                padding: '4px 10px',
-                borderRadius: '5px',
-                fontSize: '0.6875rem',
-                cursor: 'pointer'
-              }}
-            >
-              All ({totalMounted})
-            </button>
-            <button
-              onClick={() => setFilterType('local')}
-              style={{
-                background: filterType === 'local' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
-                border: '1px solid',
-                borderColor: filterType === 'local' ? '#2b3345' : 'transparent',
-                color: filterType === 'local' ? '#f8fafc' : '#64748b',
-                padding: '4px 10px',
-                borderRadius: '5px',
-                fontSize: '0.6875rem',
-                cursor: 'pointer'
-              }}
-            >
-              Local Ollama ({ollamaModels.length})
-            </button>
-            <button
-              onClick={() => setFilterType('cloud')}
-              style={{
-                background: filterType === 'cloud' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
-                border: '1px solid',
-                borderColor: filterType === 'cloud' ? '#2b3345' : 'transparent',
-                color: filterType === 'cloud' ? '#f8fafc' : '#64748b',
-                padding: '4px 10px',
-                borderRadius: '5px',
-                fontSize: '0.6875rem',
-                cursor: 'pointer'
-              }}
-            >
-              Custom Endpoints ({customModels.length})
-            </button>
+          <div className="mp-segmented font-mono">
+            {(['all', 'local', 'cloud'] as const).map((type) => (
+              <button
+                key={type}
+                className={filterType === type ? 'active' : ''}
+                onClick={() => setFilterType(type)}
+              >
+                {type === 'all' ? `All ${totalMounted}` : type === 'local' ? `Local ${ollamaModels.length}` : `Cloud ${customModels.length}`}
+              </button>
+            ))}
           </div>
-
-          {/* Add Model Button */}
-          <button
-            onClick={() => setIsCloudModalOpen(true)}
-            style={{
-              background: '#f97316',
-              color: '#0c0e14',
-              border: 'none',
-              borderRadius: '6px',
-              padding: '6px 14px',
-              fontSize: '0.75rem',
-              fontWeight: 700,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px'
-            }}
-          >
-            <span>+ Add Model</span>
+          <button className="mp-btn mp-btn-primary" onClick={() => { setModelToEdit(null); setIsCloudModalOpen(true); }}>
+            <PlusIcon size={13} />
+            Add model
           </button>
         </div>
       </div>
 
-      {/* 2. Active Model Status Card */}
-      <div
-        className="mp-card"
-        style={{
-          background: 'linear-gradient(180deg, #12151e 0%, #0e1117 100%)',
-          border: '1px solid #232938'
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }} className="font-mono">
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
-              <span style={{ fontSize: '0.6875rem', color: '#10b981', fontWeight: 700, letterSpacing: '0.04em' }}>
-                CURRENTLY ACTIVE TARGET
-              </span>
-              <span style={{ fontSize: '0.6875rem', color: '#64748b' }}>
-                {isCloud ? `Provider: ${activeCustom?.provider.toUpperCase()}` : 'Provider: Local Ollama'}
-              </span>
-            </div>
+      {feedback && (
+        <div className={`mp-alert ${feedback.ok ? 'success' : 'error'}`}>
+          {feedback.ok && <CheckIcon size={13} />}
+          <span>{feedback.message}</span>
+        </div>
+      )}
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '1.375rem', fontWeight: 800, color: '#f8fafc' }} className="font-mono">
-                {activeModel}
-              </span>
-              <span
-                className="font-mono"
-                style={{
-                  fontSize: '0.6875rem',
-                  background: 'rgba(255, 255, 255, 0.05)',
-                  border: '1px solid #1e2433',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  color: '#94a3b8'
-                }}
-              >
-                {isCloud ? `${activeCustom?.apiBase}` : 'http://localhost:11434'}
-              </span>
-              <span
-                className="font-mono"
-                style={{
-                  fontSize: '0.6875rem',
-                  background: 'rgba(16, 185, 129, 0.1)',
-                  border: '1px solid rgba(16, 185, 129, 0.25)',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  color: '#10b981'
-                }}
-              >
-                {isCloud ? 'Cloud API' : (activeLocal?.size ? `${activeLocal.size} VRAM` : 'Resident')}
-              </span>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }} className="font-mono">
-            <span
-              style={{
-                fontSize: '0.6875rem',
-                color: '#10b981',
-                background: 'rgba(16, 185, 129, 0.12)',
-                border: '1px solid rgba(16, 185, 129, 0.25)',
-                padding: '5px 12px',
-                borderRadius: '6px',
-                fontWeight: 700
-              }}
-            >
-              ● Active Model Ready
-            </span>
+      <section className="mp-global-model-card">
+        <div className="mp-global-model-copy">
+          <div className="mp-eyebrow">Global fallback</div>
+          <div className="mp-global-model-name font-mono">{globalModel}</div>
+          <p>
+            {isCloud
+              ? `${activeCustom?.provider} endpoint at ${activeCustom?.apiBase}.`
+              : activeLocal
+                ? `Local Ollama model · ${activeLocal.parameterSize || 'unknown size'} · ${activeLocal.size}.`
+                : 'This model was not found in the current provider list. Requests may fail until it is available.'}
+          </p>
+          <div className="mp-global-model-meta font-mono">
+            <span>{applications.filter(a => a.defaultModel === 'active-model').length} {applications.filter(a => a.defaultModel === 'active-model').length === 1 ? 'app follows' : 'apps follow'} this</span>
+            <span>{applications.filter(a => a.defaultModel !== 'active-model').length} {applications.filter(a => a.defaultModel !== 'active-model').length === 1 ? 'app' : 'apps'} pinned</span>
           </div>
         </div>
-      </div>
 
-      {/* 3. Local Ollama Models Table */}
+        <label className="mp-field">
+          <span className="mp-field-label">Switch global model</span>
+          <select
+            className="mp-select font-mono"
+            value={globalModel}
+            onChange={(e) => handleSwitch(e.target.value)}
+            disabled={switching || allTargets.length === 0}
+          >
+            {allTargets.length === 0 && <option value={globalModel}>{globalModel}</option>}
+            {['Local', ...Array.from(new Set(customModels.map(c => c.provider)))].map((group) => {
+              const targets = allTargets.filter((target) => target.group === group);
+              if (targets.length === 0) return null;
+              return (
+                <optgroup key={group} label={group}>
+                  {targets.map((target) => (
+                    <option key={target.id} value={target.id}>{target.label}</option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
+          <small>{switching ? 'Updating fallback...' : 'Only affects apps set to active-model.'}</small>
+        </label>
+      </section>
+
       {(filterType === 'all' || filterType === 'local') && (
-        <div className="mp-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f97316' }} />
-              <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#f8fafc' }}>
-                Local Ollama Models
-              </span>
-              <span className="font-mono" style={{ fontSize: '0.6875rem', color: '#64748b' }}>
-                (Host: http://localhost:11434)
-              </span>
+        <section className="mp-card">
+          <div className="mp-section-head">
+            <div>
+              <div className="mp-eyebrow">Local runtime</div>
+              <div className="mp-section-title">Ollama models</div>
             </div>
-            <span className="font-mono" style={{ fontSize: '0.6875rem', color: '#94a3b8' }}>
-              {ollamaModels.length} installed models
-            </span>
+            <span className="mp-muted font-mono">{ollamaModels.length} installed</span>
           </div>
 
-          <div className="mp-table-wrapper" style={{ overflowX: 'auto' }}>
-            <table className="mp-table font-mono" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div className="mp-table-wrapper">
+            <table className="mp-table">
               <thead>
                 <tr>
-                  <th>MODEL ID</th>
-                  <th>PARAMETERS & ARCHITECTURE</th>
-                  <th>SIZE ON DISK / VRAM</th>
-                  <th>STATUS</th>
-                  <th style={{ textAlign: 'right' }}>ACTION</th>
+                  <th>Model</th>
+                  <th>Architecture</th>
+                  <th>Size</th>
+                  <th>Routing</th>
+                  <th className="align-right">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredLocal.length === 0 ? (
                   <tr>
-                    <td colSpan={5} style={{ textAlign: 'center', padding: '24px', color: '#64748b' }}>
-                      {loading ? 'Discovering Ollama models...' : 'No local Ollama models found.'}
+                    <td colSpan={5}>
+                      <div className="mp-empty compact">
+                        <strong>{loading ? 'Discovering local models' : 'No local Ollama models found'}</strong>
+                        <span>{loading ? 'Checking the Ollama API.' : 'Start Ollama and refresh, or add a cloud endpoint.'}</span>
+                      </div>
                     </td>
                   </tr>
-                ) : (
-                  filteredLocal.map((m) => {
-                    const isActive = activeModel === m.name || activeModel.includes(m.name);
-                    return (
-                      <tr key={m.name}>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isActive ? '#10b981' : '#475569' }} />
-                            <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: '0.8125rem' }}>
-                              {m.name}
-                            </span>
+                ) : filteredLocal.map((model) => {
+                  const isGlobal = normalizeModel(globalModel) === normalizeModel(model.name);
+                  const pins = pinnedCount(model.name);
+                  return (
+                    <tr key={model.name}>
+                      <td>
+                        <div className="mp-model-cell">
+                          <span className={`mp-status-dot ${isGlobal ? '' : 'muted'}`} />
+                          <div>
+                            <strong className="font-mono">{model.name}</strong>
+                            <small>{model.family || 'Unknown family'}</small>
                           </div>
-                        </td>
-                        <td style={{ color: '#94a3b8', fontSize: '0.6875rem' }}>
-                          {m.parameterSize || 'Standard'} · {m.quantization || 'Q4_K_M'} · {m.family || 'GGUF'}
-                        </td>
-                        <td style={{ color: '#e2e8f0' }}>
-                          {m.size}
-                        </td>
-                        <td>
-                          {isActive ? (
-                            <span
-                              style={{
-                                color: '#10b981',
-                                background: 'rgba(16, 185, 129, 0.12)',
-                                border: '1px solid rgba(16, 185, 129, 0.25)',
-                                padding: '2px 7px',
-                                borderRadius: '4px',
-                                fontSize: '0.6875rem',
-                                fontWeight: 700
-                              }}
-                            >
-                              Active
-                            </span>
-                          ) : (
-                            <span style={{ color: '#64748b', fontSize: '0.6875rem' }}>
-                              Installed
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          {isActive ? (
-                            <span style={{ color: '#10b981', fontSize: '0.6875rem', fontWeight: 600 }}>
-                              Current Active
-                            </span>
-                          ) : (
-                            <button
-                              onClick={() => handleSwitch(m.name)}
-                              disabled={switching}
-                              className="mp-btn-ghost font-mono"
-                              style={{ fontSize: '0.6875rem', padding: '3px 10px' }}
-                            >
-                              Set Active
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
+                        </div>
+                      </td>
+                      <td className="font-mono">{model.parameterSize || 'Unknown'} · {model.quantization || 'Unknown'}</td>
+                      <td className="font-mono">{model.size}</td>
+                      <td>
+                        <div className="mp-routing-cell">
+                          {isGlobal && <span className="mp-badge success">Global</span>}
+                          {pins > 0 && <span className="mp-badge neutral">{pins} pinned</span>}
+                          {!isGlobal && pins === 0 && <span className="mp-muted">Available</span>}
+                        </div>
+                      </td>
+                      <td className="align-right">
+                        {isGlobal ? (
+                          <span className="mp-muted font-mono">Current fallback</span>
+                        ) : (
+                          <button className="mp-btn mp-btn-ghost" onClick={() => handleSwitch(model.name)} disabled={switching}>
+                            Make global
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* 4. Custom Model Endpoints Table */}
       {(filterType === 'all' || filterType === 'cloud') && (
-        <div className="mp-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#38bdf8' }} />
-              <span style={{ fontWeight: 700, fontSize: '0.875rem', color: '#f8fafc' }}>
-                Custom & External Model Endpoints
-              </span>
+        <section className="mp-card">
+          <div className="mp-section-head">
+            <div>
+              <div className="mp-eyebrow">External</div>
+              <div className="mp-section-title">Cloud and custom endpoints</div>
             </div>
-            <span className="font-mono" style={{ fontSize: '0.6875rem', color: '#94a3b8' }}>
-              {customModels.length} custom endpoints
-            </span>
+            <div className="mp-section-head-actions">
+              <span className="mp-muted font-mono">{customModels.length} configured</span>
+              <button className="mp-btn mp-btn-ghost" onClick={() => { setModelToEdit(null); setIsCloudModalOpen(true); }}>
+                <PlusIcon size={12} /> Add
+              </button>
+            </div>
           </div>
 
-          <div className="mp-table-wrapper" style={{ overflowX: 'auto' }}>
-            <table className="mp-table font-mono" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div className="mp-table-wrapper">
+            <table className="mp-table">
               <thead>
                 <tr>
-                  <th>MODEL & PROVIDER</th>
-                  <th>ENDPOINT BASE URL</th>
-                  <th>AUTH STATUS</th>
-                  <th>STATUS</th>
-                  <th style={{ textAlign: 'right' }}>ACTIONS</th>
+                  <th>Model</th>
+                  <th>Endpoint</th>
+                  <th>Auth</th>
+                  <th>Limits</th>
+                  <th>Routing</th>
+                  <th className="align-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredCloud.length === 0 ? (
                   <tr>
-                    <td colSpan={5} style={{ textAlign: 'center', padding: '24px', color: '#64748b' }}>
-                      No custom models added yet. Click "+ Add Model" above to connect LM Studio, vLLM, or cloud APIs.
+                    <td colSpan={6}>
+                      <div className="mp-empty compact">
+                        <strong>No cloud endpoints yet</strong>
+                        <span>Connect Groq, OpenAI, DeepSeek, OpenRouter, LM Studio, or vLLM.</span>
+                      </div>
                     </td>
                   </tr>
-                ) : (
-                  filteredCloud.map((cm) => {
-                    const isActive = activeModel === cm.modelId;
-                    return (
-                      <tr key={cm.modelId}>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isActive ? '#10b981' : '#475569' }} />
-                            <div>
-                              <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: '0.8125rem' }}>
-                                {cm.displayName || cm.modelId}
-                              </div>
-                              <div style={{ fontSize: '0.625rem', color: '#64748b', textTransform: 'uppercase' }}>
-                                {cm.provider} · {cm.modelId}
-                              </div>
-                            </div>
+                ) : filteredCloud.map((model) => {
+                  const isGlobal = normalizeModel(globalModel) === normalizeModel(model.modelId);
+                  const pins = pinnedCount(model.modelId);
+                  const test = testResults[model.modelId];
+                  return (
+                    <tr key={model.modelId}>
+                      <td>
+                        <div className="mp-model-cell">
+                          <span className={`mp-status-dot cloud ${isGlobal ? '' : 'muted'}`} />
+                          <div>
+                            <strong>{model.displayName || model.modelId}</strong>
+                            <small className="font-mono">{model.provider} · {model.modelId}</small>
                           </div>
-                        </td>
-                        <td style={{ color: '#38bdf8', fontSize: '0.75rem' }}>
-                          {cm.apiBase}
-                        </td>
-                        <td style={{ color: '#94a3b8', fontSize: '0.6875rem' }}>
-                          {cm.hasApiKey ? 'API Key Configured' : 'Public / Local'}
-                        </td>
-                        <td>
-                          {isActive ? (
-                            <span
-                              style={{
-                                color: '#10b981',
-                                background: 'rgba(16, 185, 129, 0.12)',
-                                border: '1px solid rgba(16, 185, 129, 0.25)',
-                                padding: '2px 7px',
-                                borderRadius: '4px',
-                                fontSize: '0.6875rem',
-                                fontWeight: 700
-                              }}
-                            >
-                              Active
-                            </span>
-                          ) : (
-                            <span style={{ color: '#64748b', fontSize: '0.6875rem' }}>
-                              Available
-                            </span>
-                          )}
-                        </td>
-                        <td style={{ textAlign: 'right' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
-                            {isActive ? (
-                              <span style={{ color: '#10b981', fontSize: '0.6875rem', fontWeight: 600 }}>
-                                Current Active
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => handleSwitch(cm.modelId)}
-                                disabled={switching}
-                                className="mp-btn-ghost font-mono"
-                                style={{ fontSize: '0.6875rem', padding: '3px 10px' }}
-                              >
-                                Set Active
-                              </button>
-                            )}
-
-                            <button
-                              onClick={() => setModelToDelete(cm)}
-                              style={{
-                                background: 'transparent',
-                                border: 'none',
-                                color: '#64748b',
-                                cursor: 'pointer',
-                                padding: '4px',
-                                display: 'inline-flex',
-                                alignItems: 'center'
-                              }}
-                              title="Delete this cloud model"
-                            >
-                              <TrashIcon size={13} />
+                        </div>
+                      </td>
+                      <td className="font-mono mp-endpoint-cell">{model.apiBase}</td>
+                      <td>
+                        <span className="mp-muted">{model.hasApiKey ? 'Key stored' : 'No key'}</span>
+                        {test && (
+                          <div className={`mp-test-pill ${test.ok ? 'ok' : 'error'}`} title={test.message}>
+                            {test.ok ? `${Math.round(test.latencyMs || 0)} ms` : test.errorType || 'failed'}
+                          </div>
+                        )}
+                      </td>
+                      <td className="font-mono">
+                        <div>{model.contextWindow ? `${model.contextWindow.toLocaleString()} ctx` : 'ctx n/a'}</div>
+                        <div className="mp-table-secondary">
+                          {model.inputCostPerMillion != null || model.outputCostPerMillion != null
+                            ? `$${model.inputCostPerMillion ?? 0}/$${model.outputCostPerMillion ?? 0} per 1M`
+                            : 'Unpriced'}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="mp-routing-cell">
+                          {isGlobal && <span className="mp-badge success">Global</span>}
+                          {pins > 0 && <span className="mp-badge neutral">{pins} pinned</span>}
+                          {!isGlobal && pins === 0 && <span className="mp-muted">Available</span>}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="mp-row-actions">
+                          <button className="mp-btn mp-btn-ghost" onClick={() => handleTestModel(model)} disabled={testingModel === model.modelId}>
+                            <ZapIcon size={11} />
+                            {testingModel === model.modelId ? 'Testing' : 'Test'}
+                          </button>
+                          {!isGlobal && (
+                            <button className="mp-btn mp-btn-ghost" onClick={() => handleSwitch(model.modelId)} disabled={switching}>
+                              Make global
                             </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
+                          )}
+                          <button className="mp-icon-btn" onClick={() => { setModelToEdit(model); setIsCloudModalOpen(true); }} title="Edit model">
+                            Edit
+                          </button>
+                          <button className="mp-icon-btn danger" onClick={() => setModelToDelete(model)} title="Delete model">
+                            <TrashIcon size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* Add Custom Cloud Model Modal */}
       <AddCloudModelModal
         isOpen={isCloudModalOpen}
-        onClose={() => setIsCloudModalOpen(false)}
+        modelToEdit={modelToEdit}
+        onClose={() => { setIsCloudModalOpen(false); setModelToEdit(null); }}
         onModelAdded={async () => {
           await loadModels();
-          if (onModelSwitched) onModelSwitched();
+          onModelSwitched?.();
+          flash(true, modelToEdit ? 'Model updated.' : 'Model added and available for routing.');
         }}
       />
 
-      {/* Confirmation Modal for Cloud Model Deletion */}
       <ConfirmModal
         isOpen={!!modelToDelete}
-        title="Delete Model Endpoint"
-        message={`Are you sure you want to remove upstream endpoint "${modelToDelete?.displayName || modelToDelete?.modelId}"?`}
-        subMessage="This endpoint will no longer be available for dynamic routing."
-        confirmLabel="Delete Model"
+        title="Delete model endpoint"
+        message={`Remove "${modelToDelete?.displayName || modelToDelete?.modelId}" from routing?`}
+        subMessage="Applications pinned to this model will fail until they are repointed."
+        confirmLabel="Delete model"
         isDanger={true}
         onConfirm={confirmDeleteCloud}
         onClose={() => setModelToDelete(null)}

@@ -5,12 +5,13 @@ import {
   RequestsResponse,
   ApplicationItem
 } from './types/analytics';
-import { 
-  fetchSummary, 
-  fetchTimeSeries, 
+import {
+  fetchSummary,
+  fetchTimeSeries,
   fetchRequests,
   fetchApplications,
-  fetchInstalledModels
+  fetchInstalledModels,
+  fetchAlerts
 } from './api/client';
 import { AppSidebar, NavTab } from './components/AppSidebar';
 import { OverviewView } from './components/OverviewView';
@@ -18,8 +19,11 @@ import { ApplicationsView } from './components/ApplicationsView';
 import { PlaygroundView } from './components/PlaygroundView';
 import { RequestLogsView } from './components/RequestLogsView';
 import { ModelsHubView } from './components/ModelsHubView';
+import { CostsBudgetsView } from './components/CostsBudgetsView';
+import { FailoverView } from './components/FailoverView';
 import { ResetDbModal } from './components/ResetDbModal';
-import { CopyIcon, CheckIcon, RotateCwIcon } from './components/icons/Icons';
+import { CopyIcon, CheckIcon, CloseIcon, BellIcon, SunIcon, MoonIcon } from './components/icons/Icons';
+import { useTheme } from './design-system/ThemeProvider';
 
 export type OverviewTimeframe = '15m' | '1h' | '6h' | '24h' | '7d';
 
@@ -32,6 +36,7 @@ const OVERVIEW_TIMEFRAME_MS: Record<OverviewTimeframe, number> = {
 };
 
 export const App: React.FC = () => {
+  const { theme, toggleTheme } = useTheme();
   const [currentTab, setCurrentTab] = useState<NavTab>('overview');
   const [summary, setSummary] = useState<SummaryKpis | null>(null);
   const [timeSeries, setTimeSeries] = useState<TimeSeriesPoint[]>([]);
@@ -40,12 +45,47 @@ export const App: React.FC = () => {
   const [installedModels, setInstalledModels] = useState<string[]>(['active-model', 'qwen2.5:1.5b', 'qwen2.5:3b']);
   const [activeModel, setActiveModel] = useState<string>('qwen2.5:3b');
   const [page, setPage] = useState<number>(1);
-  const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+  const [selectedAppId, setSelectedAppId] = useState<string | null | undefined>(undefined);
   const [benchmarkRefresh, setBenchmarkRefresh] = useState<number>(0);
   const [overviewTimeframe, setOverviewTimeframe] = useState<OverviewTimeframe>('24h');
   const [copiedConfig, setCopiedConfig] = useState<boolean>(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
   const [resetNotification, setResetNotification] = useState<string | null>(null);
+  const [gatewayOnline, setGatewayOnline] = useState<boolean | null>(null);
+  const [unacknowledgedAlerts, setUnacknowledgedAlerts] = useState<number>(0);
+
+  const refreshAlertCount = useCallback(async () => {
+    try {
+      const data = await fetchAlerts({ unacknowledged: true, limit: 1 });
+      setUnacknowledgedAlerts(data.unacknowledged || 0);
+    } catch {
+      // Gateway may be starting up; the bell simply stays at its last value.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshAlertCount();
+    const interval = setInterval(refreshAlertCount, 30 * 1000);
+    return () => clearInterval(interval);
+  }, [refreshAlertCount]);
+
+  useEffect(() => {
+    let mounted = true;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (mounted) setGatewayOnline(res.ok);
+      } catch {
+        if (mounted) setGatewayOnline(false);
+      }
+    };
+    checkHealth();
+    const interval = setInterval(checkHealth, 15000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   // Load telemetry data from backend
   const loadDashboardData = useCallback(async () => {
@@ -83,17 +123,37 @@ export const App: React.FC = () => {
     loadDashboardData();
   }, [loadDashboardData]);
 
+  // Default the workspace to the first application once apps are known, but
+  // preserve an explicit "All applications" choice (selectedAppId === null).
+  useEffect(() => {
+    if (applications.length === 0) return;
+    if (selectedAppId === undefined) {
+      setSelectedAppId(applications[0].id);
+      return;
+    }
+    if (typeof selectedAppId === 'string' && !applications.some((app) => app.id === selectedAppId)) {
+      setSelectedAppId(applications[0].id);
+    }
+  }, [applications, selectedAppId]);
+
   const handleBenchmarkComplete = () => {
     setBenchmarkRefresh(prev => prev + 1);
     loadDashboardData();
   };
 
   const copyConfigSnippet = () => {
-    const config = `// Connect SensorReportBot or any app to SLIR (Switch LLM In Runtime):\nBase URL: http://localhost:4101/v1\nModel: active-model\nAuth Header: Authorization: Bearer dev-secret-key`;
+    const app = applications.find((candidate) => candidate.id === selectedAppId) || applications[0];
+    const apiKey = app?.apiKey || '<your-application-key>';
+    const config = `Base URL: http://localhost:4101/v1\nModel: active-model\nAuthorization: Bearer ${apiKey}`;
     navigator.clipboard.writeText(config);
     setCopiedConfig(true);
     setTimeout(() => setCopiedConfig(false), 2000);
   };
+
+  const routingAppId = selectedAppId === null
+    ? (applications[0]?.id ?? null)
+    : (selectedAppId ?? applications[0]?.id ?? null);
+  const scopedApp = applications.find((app) => app.id === (selectedAppId ?? routingAppId));
 
   const handleOpenResetModal = () => {
     setIsResetModalOpen(true);
@@ -136,11 +196,13 @@ export const App: React.FC = () => {
 
   const getBreadcrumbTitle = () => {
     switch (currentTab) {
-      case 'overview': return 'Gateway';
+      case 'overview': return 'Overview';
       case 'playground': return 'Playground';
       case 'models': return 'Models & Providers';
       case 'apps': return 'Applications & API Clients';
       case 'logs': return 'Request Logs';
+      case 'costs': return 'Costs & Alerts';
+      case 'failover': return 'Automatic Failover';
       default: return 'Gateway';
     }
   };
@@ -151,9 +213,13 @@ export const App: React.FC = () => {
       <AppSidebar
         currentTab={currentTab}
         onTabChange={setCurrentTab}
+        applications={applications}
+        selectedAppId={selectedAppId ?? null}
+        onSelectAppId={setSelectedAppId}
         appsCount={applications.length}
         activeModel={activeModel}
         gatewayPort={4101}
+        gatewayOnline={gatewayOnline}
       />
 
       {/* 2. Main Content Area */}
@@ -161,9 +227,9 @@ export const App: React.FC = () => {
         {/* Top Navbar */}
         <header className="mp-topbar">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ color: '#64748b', fontSize: '0.8125rem' }}>SLIR</span>
-            <span style={{ color: '#475569', fontSize: '0.8125rem' }}>/</span>
-            <span style={{ color: '#cbd5e1', fontWeight: 600, fontSize: '0.8125rem' }}>
+            <span style={{ color: 'var(--mp-text-muted)', fontSize: '0.8125rem' }}>SLIR</span>
+            <span style={{ color: 'var(--mp-border-strong)', fontSize: '0.8125rem' }}>/</span>
+            <span style={{ color: 'var(--mp-text-secondary)', fontWeight: 600, fontSize: '0.8125rem' }}>
               {getBreadcrumbTitle()}
             </span>
 
@@ -174,22 +240,86 @@ export const App: React.FC = () => {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '6px',
-                background: 'rgba(255, 255, 255, 0.04)',
-                border: '1px solid #1e2433',
+                background: 'var(--mp-hover-bg)',
+                border: '1px solid var(--mp-border)',
                 padding: '2px 8px',
                 borderRadius: '5px',
                 fontSize: '0.6875rem',
-                color: '#e2e8f0',
+                color: 'var(--mp-text-primary)',
                 marginLeft: '4px'
               }}
             >
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f97316' }} />
-              <span style={{ color: '#94a3b8' }}>Target:</span>
-              <strong style={{ color: '#f8fafc' }}>{activeModel.length > 24 ? `${activeModel.slice(0, 22)}...` : activeModel}</strong>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-orange)' }} />
+              <span style={{ color: 'var(--mp-text-secondary)' }}>Global:</span>
+              <strong style={{ color: 'var(--mp-text-primary)' }}>{activeModel.length > 24 ? `${activeModel.slice(0, 22)}...` : activeModel}</strong>
+            </div>
+
+            <div
+              className="font-mono"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: 'var(--mp-hover-bg-subtle)',
+                border: '1px solid var(--mp-border)',
+                padding: '2px 8px',
+                borderRadius: '5px',
+                fontSize: '0.6875rem',
+                color: 'var(--mp-text-secondary)',
+                marginLeft: '2px'
+              }}
+              title="Analytics scope selected in the sidebar"
+            >
+              {selectedAppId === null ? 'All applications' : (scopedApp?.name || 'Select application')}
             </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }} className="font-mono">
+            {/* Alert Bell */}
+            <button
+              onClick={() => setCurrentTab('costs')}
+              className="mp-btn-ghost"
+              style={{ position: 'relative', padding: '5px 7px' }}
+              title={unacknowledgedAlerts > 0 ? `${unacknowledgedAlerts} unacknowledged budget alert(s)` : 'No unacknowledged alerts'}
+              aria-label="Budget alerts"
+            >
+              <BellIcon size={14} />
+              {unacknowledgedAlerts > 0 && (
+                <span
+                  className="font-mono"
+                  style={{
+                    position: 'absolute',
+                    top: '-5px',
+                    right: '-5px',
+                    minWidth: '15px',
+                    height: '15px',
+                    padding: '0 3px',
+                    borderRadius: '999px',
+                    background: '#f43f5e',
+                    color: '#ffffff',
+                    fontSize: '0.5625rem',
+                    fontWeight: 700,
+                    display: 'grid',
+                    placeItems: 'center',
+                    lineHeight: 1
+                  }}
+                >
+                  {unacknowledgedAlerts > 99 ? '99+' : unacknowledgedAlerts}
+                </span>
+              )}
+            </button>
+
+            {/* Theme Toggle */}
+            <button
+              onClick={toggleTheme}
+              className="mp-btn-ghost"
+              style={{ padding: '5px 7px' }}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label="Toggle color theme"
+            >
+              {theme === 'dark' ? <SunIcon size={14} /> : <MoonIcon size={14} />}
+            </button>
+
             {/* Live Status Indicator */}
             <div
               style={{
@@ -197,13 +327,20 @@ export const App: React.FC = () => {
                 alignItems: 'center',
                 gap: '6px',
                 fontSize: '0.6875rem',
-                color: '#10b981',
+                color: gatewayOnline === false ? '#f43f5e' : gatewayOnline === null ? '#f59e0b' : '#10b981',
                 fontWeight: 600,
                 letterSpacing: '0.02em'
               }}
             >
-              <span className="mp-pulse-dot" style={{ width: '6px', height: '6px', background: '#10b981' }} />
-              GATEWAY LIVE
+              <span
+                className="mp-pulse-dot"
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  background: gatewayOnline === false ? '#f43f5e' : gatewayOnline === null ? '#f59e0b' : '#10b981'
+                }}
+              />
+              {gatewayOnline === false ? 'GATEWAY OFFLINE' : gatewayOnline === null ? 'GATEWAY CHECKING' : 'GATEWAY LIVE'}
             </div>
 
             {/* Copy Config */}
@@ -213,14 +350,14 @@ export const App: React.FC = () => {
               style={{ fontSize: '0.75rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '5px' }}
             >
               {copiedConfig ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-              <span>{copiedConfig ? 'Copied' : 'Copy Config'}</span>
+              <span>{copiedConfig ? 'Copied' : 'Copy API config'}</span>
             </button>
 
             {/* Reset Database Trigger */}
             <button
               onClick={handleOpenResetModal}
               className="mp-btn-ghost font-mono"
-              style={{ fontSize: '0.75rem', padding: '4px 10px', color: '#94a3b8' }}
+              style={{ fontSize: '0.75rem', padding: '4px 10px', color: 'var(--mp-text-secondary)' }}
               title="Database Reset & Gateway Settings"
             >
               <span>Reset DB</span>
@@ -232,9 +369,9 @@ export const App: React.FC = () => {
         {resetNotification && (
           <div
             style={{
-              background: 'rgba(16, 185, 129, 0.12)',
-              borderBottom: '1px solid rgba(16, 185, 129, 0.3)',
-              color: '#34d399',
+              background: 'var(--mp-green-soft)',
+              borderBottom: '1px solid var(--mp-green-line)',
+              color: 'var(--mp-green)',
               padding: '8px 24px',
               fontSize: '0.75rem',
               display: 'flex',
@@ -246,9 +383,10 @@ export const App: React.FC = () => {
             <span>{resetNotification}</span>
             <button
               onClick={() => setResetNotification(null)}
-              style={{ background: 'transparent', border: 'none', color: '#34d399', cursor: 'pointer', fontSize: '0.75rem' }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--mp-green)', cursor: 'pointer', display: 'grid', placeItems: 'center' }}
+              aria-label="Dismiss notification"
             >
-              ✕
+              <CloseIcon size={14} />
             </button>
           </div>
         )}
@@ -268,8 +406,9 @@ export const App: React.FC = () => {
               onClearDatabase={handleOpenResetModal}
               activeModel={activeModel}
               applications={applications}
-              selectedAppId={selectedAppId}
-              onSelectAppId={setSelectedAppId}
+              selectedAppId={routingAppId}
+              allAppsScope={selectedAppId === null}
+              onSelectAppId={(appId) => setSelectedAppId(appId)}
               activeTimeframe={overviewTimeframe}
               onTimeframeChange={setOverviewTimeframe}
             />
@@ -288,6 +427,7 @@ export const App: React.FC = () => {
             <ModelsHubView
               onModelSwitched={handleBenchmarkComplete}
               refreshTrigger={benchmarkRefresh}
+              applications={applications}
             />
           )}
 
@@ -304,8 +444,25 @@ export const App: React.FC = () => {
             <RequestLogsView
               applications={applications}
               installedModels={installedModels}
+              initialAppId={selectedAppId ?? null}
               onClearDatabase={handleOpenResetModal}
               onReplayInPlayground={() => setCurrentTab('playground')}
+            />
+          )}
+
+          {currentTab === 'costs' && (
+            <CostsBudgetsView
+              applications={applications}
+              onAlertsChanged={refreshAlertCount}
+            />
+          )}
+
+          {currentTab === 'failover' && (
+            <FailoverView
+              applications={applications}
+              selectedAppId={routingAppId}
+              onSelectAppId={setSelectedAppId}
+              onApplicationsChanged={loadDashboardData}
             />
           )}
         </main>

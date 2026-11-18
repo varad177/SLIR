@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { createApplication } from '../api/client';
 import { ApplicationItem } from '../types/analytics';
 import { CloseIcon, AlertTriangleIcon, CheckIcon, CopyIcon, ApplicationsIcon } from './icons/Icons';
+import { GatewayConnectionCard } from './GatewayConnectionCard';
+import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 
 interface CreateAppModalProps {
   isOpen: boolean;
@@ -23,10 +25,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [createdApp, setCreatedApp] = useState<ApplicationItem | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState(false);
-  const [envMode, setEnvMode] = useState<'host' | 'docker'>('docker');
-
-  const activeBaseUrl = envMode === 'docker' ? 'http://host.docker.internal:4101/v1' : 'http://localhost:4101/v1';
+  const [baseUrl, setBaseUrl] = useState(getBrowserGatewayBaseUrl());
 
   if (!isOpen) return null;
 
@@ -57,15 +56,10 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
     }
   };
 
-  const copyToClipboard = (text: string, isKey = true) => {
+  const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    if (isKey) {
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 2000);
-    } else {
-      setCopiedUrl(true);
-      setTimeout(() => setCopiedUrl(false), 2000);
-    }
+    setCopiedKey(true);
+    setTimeout(() => setCopiedKey(false), 2000);
   };
 
   const resetAndClose = () => {
@@ -94,8 +88,8 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
     }} onClick={resetAndClose}>
       <div 
         style={{
-          background: '#12151e',
-          border: '1px solid #1e2433',
+          background: 'var(--mp-bg-card)',
+          border: '1px solid var(--mp-border)',
           borderRadius: '8px',
           width: '100%',
           maxWidth: '560px',
@@ -107,7 +101,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
         {/* Modal Header */}
         <div style={{
           padding: '16px 20px',
-          borderBottom: '1px solid #1e2433',
+          borderBottom: '1px solid var(--mp-border)',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
@@ -115,14 +109,14 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
         }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ color: '#f97316' }}>
+              <span style={{ color: 'var(--mp-orange)' }}>
                 <ApplicationsIcon size={16} />
               </span>
-              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: '#f8fafc', letterSpacing: '-0.01em' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--mp-text-primary)', letterSpacing: '-0.01em' }}>
                 {createdApp ? 'Application Credentials Generated' : 'Register New Application'}
               </h3>
             </div>
-            <p style={{ margin: '4px 0 0 24px', fontSize: '0.75rem', color: '#64748b' }}>
+            <p style={{ margin: '4px 0 0 24px', fontSize: '0.75rem', color: 'var(--mp-text-muted)' }}>
               {createdApp 
                 ? 'Credentials generated. Plug into your client SDK or C# / Python codebase.'
                 : 'Provisions virtual API key and isolated routing policy.'}
@@ -134,7 +128,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
             style={{
               background: 'transparent',
               border: 'none',
-              color: '#64748b',
+              color: 'var(--mp-text-muted)',
               cursor: 'pointer',
               padding: '4px',
               display: 'flex',
@@ -151,7 +145,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
           <div style={{
             background: 'rgba(239, 68, 68, 0.1)',
             border: '1px solid rgba(239, 68, 68, 0.3)',
-            color: '#f87171',
+            color: 'var(--mp-red)',
             padding: '10px 14px',
             borderRadius: '6px',
             fontSize: '0.75rem',
@@ -178,96 +172,24 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
               alignItems: 'flex-start',
               gap: '10px'
             }}>
-              <span style={{ color: '#10b981', marginTop: '1px' }}>
+              <span style={{ color: 'var(--mp-green)', marginTop: '1px' }}>
                 <CheckIcon size={16} />
               </span>
               <div>
-                <div style={{ color: '#34d399', fontWeight: 600, fontSize: '0.8125rem' }}>
+                <div style={{ color: 'var(--mp-green)', fontWeight: 600, fontSize: '0.8125rem' }}>
                   Application "{createdApp.name}" registered successfully!
                 </div>
-                <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: '#94a3b8', lineHeight: 1.4 }}>
+                <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: 'var(--mp-text-secondary)', lineHeight: 1.4 }}>
                   Copy your credentials below. You can plug them directly into your C# (.NET), Python, or cURL client.
                 </p>
               </div>
             </div>
 
-            {/* Environment Toggle: Docker vs Host */}
-            <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Where will your application run?
-              </label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setEnvMode('docker')}
-                  style={{
-                    background: envMode === 'docker' ? 'rgba(249, 115, 22, 0.15)' : '#090b10',
-                    border: `1px solid ${envMode === 'docker' ? '#f97316' : '#1e2433'}`,
-                    color: envMode === 'docker' ? '#f8fafc' : '#64748b',
-                    padding: '8px 10px',
-                    borderRadius: '6px',
-                    fontSize: '0.75rem',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                  className="font-mono"
-                >
-                  <div style={{ fontWeight: 700, color: envMode === 'docker' ? '#f97316' : '#cbd5e1' }}>Inside Docker Container</div>
-                  <div style={{ fontSize: '0.625rem', color: '#64748b', marginTop: '2px' }}>Uses host.docker.internal:4101</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEnvMode('host')}
-                  style={{
-                    background: envMode === 'host' ? 'rgba(249, 115, 22, 0.15)' : '#090b10',
-                    border: `1px solid ${envMode === 'host' ? '#f97316' : '#1e2433'}`,
-                    color: envMode === 'host' ? '#f8fafc' : '#64748b',
-                    padding: '8px 10px',
-                    borderRadius: '6px',
-                    fontSize: '0.75rem',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                  className="font-mono"
-                >
-                  <div style={{ fontWeight: 700, color: envMode === 'host' ? '#f97316' : '#cbd5e1' }}>Direct Host (IDE / CLI)</div>
-                  <div style={{ fontSize: '0.625rem', color: '#64748b', marginTop: '2px' }}>Uses localhost:4101</div>
-                </button>
-              </div>
-            </div>
-
-            {/* Base URL */}
-            <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Gateway Base URL ({envMode === 'docker' ? 'Docker Bridge' : 'Localhost'})
-              </label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="text"
-                  readOnly
-                  value={activeBaseUrl}
-                  className="mp-input font-mono"
-                  style={{ background: '#090b10', color: '#38bdf8', fontSize: '0.8125rem' }}
-                />
-                <button
-                  onClick={() => copyToClipboard(activeBaseUrl, false)}
-                  className="mp-btn-primary font-mono"
-                  style={{ padding: '0 14px', fontSize: '0.75rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '5px' }}
-                >
-                  {copiedUrl ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-                  <span>{copiedUrl ? 'Copied' : 'Copy URL'}</span>
-                </button>
-              </div>
-              <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '4px' }}>
-                {envMode === 'docker'
-                  ? 'Docker containers cannot reach "localhost" directly. host.docker.internal bridges out to your host PC.'
-                  : 'Use localhost when testing directly on Windows/Mac with python main.py or dotnet run.'}
-              </div>
-            </div>
+            <GatewayConnectionCard value={baseUrl} onChange={setBaseUrl} compact />
 
             {/* API Key */}
             <div style={{ marginBottom: '16px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 Virtual API Key (Save this key)
               </label>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -276,10 +198,10 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
                   readOnly
                   value={createdApp.apiKey}
                   className="mp-input font-mono"
-                  style={{ background: '#090b10', color: '#34d399', fontSize: '0.8125rem', fontWeight: 600 }}
+                  style={{ background: 'var(--mp-surface-input)', color: 'var(--mp-green)', fontSize: '0.8125rem', fontWeight: 600 }}
                 />
                 <button
-                  onClick={() => copyToClipboard(createdApp.apiKey, true)}
+                  onClick={() => copyToClipboard(createdApp.apiKey)}
                   className="mp-btn-primary font-mono"
                   style={{ padding: '0 14px', fontSize: '0.75rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '5px' }}
                 >
@@ -287,26 +209,26 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
                   <span>{copiedKey ? 'Copied' : 'Copy Key'}</span>
                 </button>
               </div>
-              <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '4px' }}>
+              <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)', marginTop: '4px' }}>
                 Requests using this key will be tracked with system prompt caching & token telemetry.
               </div>
             </div>
 
             {/* Sample C# appsettings snippet */}
             <div style={{
-              background: '#090b10',
-              border: '1px solid #1e2433',
+              background: 'var(--mp-surface-input)',
+              border: '1px solid var(--mp-border)',
               borderRadius: '6px',
               padding: '12px',
               marginBottom: '16px'
             }}>
-              <div style={{ fontSize: '0.6875rem', color: '#64748b', marginBottom: '6px', display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono, monospace' }}>
-                <span>Example: appsettings.json ({envMode === 'docker' ? 'Docker Compose' : 'Local IDE'})</span>
-                <span style={{ color: '#38bdf8' }}>C# / .NET Ready</span>
+              <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)', marginBottom: '6px', display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono, monospace' }}>
+                <span>Example: appsettings.json</span>
+                <span style={{ color: 'var(--mp-cyan)' }}>C# / .NET Ready</span>
               </div>
-              <pre className="font-mono" style={{ margin: 0, fontSize: '0.75rem', color: '#cbd5e1', overflowX: 'auto', lineHeight: 1.4 }}>
+              <pre className="font-mono" style={{ margin: 0, fontSize: '0.75rem', color: 'var(--mp-text-secondary)', overflowX: 'auto', lineHeight: 1.4 }}>
 {`"Llm": {
-  "Endpoint": "${activeBaseUrl}",
+  "Endpoint": "${baseUrl}",
   "ApiKey": "${createdApp.apiKey}",
   "Model": "${createdApp.defaultModel}"
 }`}
@@ -323,7 +245,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
           /* REGISTRATION FORM */
           <form onSubmit={handleSubmit} style={{ padding: '20px' }}>
             <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 Application Name *
               </label>
               <input
@@ -339,7 +261,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
             </div>
 
             <div style={{ marginBottom: '14px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 Description (Optional)
               </label>
               <input
@@ -353,21 +275,21 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
             </div>
 
             <div style={{ marginBottom: '18px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 Default Target Model
               </label>
               <select
                 value={defaultModel}
                 onChange={(e) => setDefaultModel(e.target.value)}
                 className="mp-select font-mono"
-                style={{ width: '100%', fontSize: '0.75rem', background: '#090b10', borderColor: '#1e2433' }}
+                style={{ width: '100%', fontSize: '0.75rem', background: 'var(--mp-surface-input)', borderColor: 'var(--mp-border)' }}
               >
                 <option value="active-model">active-model (Dynamic Gateway Switcher)</option>
                 {installedModels.filter(m => m !== 'active-model').map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
-              <div style={{ fontSize: '0.6875rem', color: '#64748b', marginTop: '4px' }}>
+              <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)', marginTop: '4px' }}>
                 Selecting <code>active-model</code> enables zero-downtime hot-swapping between local Ollama and Cloud models from the dashboard.
               </div>
             </div>
@@ -379,13 +301,13 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
               padding: '10px 14px',
               marginBottom: '20px',
               fontSize: '0.75rem',
-              color: '#94a3b8',
+              color: 'var(--mp-text-secondary)',
               lineHeight: 1.4
             }}>
               Upon creating this app, you will receive a dedicated <strong>Base URL</strong> (<code>http://localhost:4101/v1</code>) and <strong>Virtual API Key</strong> (<code>mp_live_...</code>) ready to authenticate requests.
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', paddingTop: '12px', borderTop: '1px solid #1e2433' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', paddingTop: '12px', borderTop: '1px solid var(--mp-border)' }}>
               <button
                 type="button"
                 onClick={resetAndClose}
