@@ -29,7 +29,7 @@ function latestEvent() {
   return db.prepare(`
     SELECT request_id, application_id, provider, model, status, is_streaming,
            prompt_tokens, completion_tokens, total_tokens, cost_status,
-           http_status, client_model, error_type, error_message,
+           http_status, client_model, error_type, error_message, trace_id,
            failover_used, failover_from_model, failover_reason,
            failover_attempts, failover_trace
     FROM usage_events
@@ -152,6 +152,15 @@ test('health endpoint reports a live database', async () => {
   assert.equal(body.dbType, 'better-sqlite3');
 });
 
+test('metrics endpoint exposes Prometheus counters', async () => {
+  const res = await fetch(`${baseUrl}/api/metrics`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/plain/);
+  const text = await res.text();
+  assert.match(text, /slir_requests_total/);
+  assert.match(text, /slir_uptime_seconds/);
+});
+
 test('gateway config normalizes public base URL', async () => {
   const original = process.env.SLIR_PUBLIC_BASE_URL;
   process.env.SLIR_PUBLIC_BASE_URL = 'https://ai.example.com/gateway';
@@ -202,9 +211,12 @@ test('successful cloud calls are persisted with provider usage', async () => {
     messages: [{ role: 'user', content: 'hello' }]
   });
   assert.equal(res.status, 200);
+  const requestId = res.headers.get('x-request-id');
+  assert.match(requestId, /^req_/);
 
   const event = latestEvent();
   assert.equal(event.status, 'success');
+  assert.equal(event.trace_id, requestId);
   assert.equal(event.provider, 'mock');
   assert.equal(event.model, 'mock-model');
   assert.equal(event.prompt_tokens, 10);
@@ -213,6 +225,17 @@ test('successful cloud calls are persisted with provider usage', async () => {
   assert.equal(event.cost_status, 'unknown');
   assert.equal(event.http_status, 200);
   assert.equal(event.client_model, 'mock-model');
+});
+
+test('model health endpoint reports recent per-model reliability', async () => {
+  const res = await fetch(`${baseUrl}/api/models/health?hours=24`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.windowHours, 24);
+  const model = body.models.find((item) => item.model === 'mock-model');
+  assert.ok(model);
+  assert.ok(model.requests >= 1);
+  assert.ok(['healthy', 'degraded', 'unhealthy'].includes(model.status));
 });
 
 test('active-model honours the application default model', async () => {

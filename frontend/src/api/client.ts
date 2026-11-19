@@ -12,6 +12,7 @@ import {
   CustomCloudModel,
   DevConfig,
   ProfileBenchmarkResult,
+  ModelHealthResponse,
   ModelTestResult,
   BudgetItem,
   BudgetPayload,
@@ -97,6 +98,12 @@ const MODELS_BASE_URL = '/api/models';
 export async function fetchInstalledModels(): Promise<InstalledModelsResponse> {
   const res = await fetch(`${MODELS_BASE_URL}/installed`);
   if (!res.ok) throw new Error(`Failed to load installed models: ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchModelHealth(hours = 24): Promise<ModelHealthResponse> {
+  const res = await fetch(`${MODELS_BASE_URL}/health?hours=${hours}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Failed to load model health: ${res.statusText}`);
   return res.json();
 }
 

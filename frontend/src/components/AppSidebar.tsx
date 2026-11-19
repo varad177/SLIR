@@ -8,12 +8,13 @@ import {
   LogsIcon,
   CostsIcon,
   FailoverIcon,
+  HelpIcon,
   ChevronDownIcon,
   ShieldCheckIcon
 } from './icons/Icons';
 import type { ApplicationItem } from '../types/analytics';
 
-export type NavTab = 'overview' | 'playground' | 'models' | 'apps' | 'logs' | 'costs' | 'failover';
+export type NavTab = 'overview' | 'playground' | 'models' | 'apps' | 'logs' | 'costs' | 'failover' | 'help';
 
 interface AppSidebarProps {
   currentTab: NavTab;
@@ -45,7 +46,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
     { id: 'logs', label: 'Request Logs', icon: <LogsIcon size={15} /> },
     { id: 'costs', label: 'Costs & Alerts', icon: <CostsIcon size={15} /> },
     { id: 'failover', label: 'Failover', icon: <FailoverIcon size={15} /> },
-    { id: 'playground', label: 'Playground', icon: <PlaygroundIcon size={15} /> }
+    { id: 'playground', label: 'Playground', icon: <PlaygroundIcon size={15} /> },
+    { id: 'help', label: 'User Manual', icon: <HelpIcon size={15} /> }
   ];
 
   return (

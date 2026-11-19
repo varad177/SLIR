@@ -4,6 +4,15 @@ import { ApplicationItem } from '../types/analytics';
 import { CloseIcon, AlertTriangleIcon, CheckIcon, CopyIcon, ApplicationsIcon } from './icons/Icons';
 import { GatewayConnectionCard } from './GatewayConnectionCard';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
+import { copyText } from '../utils/clipboard';
+
+const APP_TEMPLATES = [
+  { label: 'General assistant', name: 'General Assistant', description: 'General-purpose chat and workflow assistant.' },
+  { label: 'RAG service', name: 'RAG Service', description: 'Retrieval-augmented answers over internal documents.' },
+  { label: 'Code review bot', name: 'Code Review Bot', description: 'Reviews pull requests and suggests changes.' },
+  { label: 'Support chatbot', name: 'Support Chatbot', description: 'Customer support assistant with guardrails.' },
+  { label: 'Industrial monitor', name: 'Sensor Monitor', description: 'Real-time sensor analysis and maintenance alerts.' }
+];
 
 interface CreateAppModalProps {
   isOpen: boolean;
@@ -56,8 +65,8 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
+  const copyToClipboard = async (text: string) => {
+    if (!(await copyText(text))) return;
     setCopiedKey(true);
     setTimeout(() => setCopiedKey(false), 2000);
   };
@@ -244,6 +253,28 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
         ) : (
           /* REGISTRATION FORM */
           <form onSubmit={handleSubmit} style={{ padding: '20px' }}>
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Start from a template
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {APP_TEMPLATES.map((template) => (
+                  <button
+                    key={template.label}
+                    type="button"
+                    className="mp-btn mp-btn-ghost"
+                    style={{ fontSize: '0.6875rem', padding: '5px 9px' }}
+                    onClick={() => {
+                      setName(template.name);
+                      setDescription(template.description);
+                    }}
+                  >
+                    {template.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div style={{ marginBottom: '14px' }}>
               <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 Application Name *
@@ -266,7 +297,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="e.g. Real-time industrial motor predictive maintenance bot"
+                placeholder="e.g. Real-time industrial maintenance bot"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 className="mp-input font-mono"
@@ -304,7 +335,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
               color: 'var(--mp-text-secondary)',
               lineHeight: 1.4
             }}>
-              Upon creating this app, you will receive a dedicated <strong>Base URL</strong> (<code>http://localhost:4101/v1</code>) and <strong>Virtual API Key</strong> (<code>mp_live_...</code>) ready to authenticate requests.
+              Upon creating this app, you will receive a dedicated <strong>Base URL</strong> (<code>{getBrowserGatewayBaseUrl()}</code>) and <strong>Virtual API Key</strong> (<code>mp_live_...</code>) ready to authenticate requests.
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', paddingTop: '12px', borderTop: '1px solid var(--mp-border)' }}>

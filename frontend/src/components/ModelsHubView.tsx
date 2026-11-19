@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { OllamaModelInfo, CustomCloudModel, ApplicationItem, ModelTestResult } from '../types/analytics';
+import { OllamaModelInfo, CustomCloudModel, ApplicationItem, ModelHealthItem, ModelTestResult } from '../types/analytics';
 import {
   fetchInstalledModels,
+  fetchModelHealth,
   deleteCustomCloudModel,
   setActiveModel,
   testStoredModel
@@ -24,6 +25,9 @@ interface ModelsHubViewProps {
 
 const normalizeModel = (value?: string | null) => (value || '').replace(/^ollama\//, '').toLowerCase();
 
+const healthClass = (status: ModelHealthItem['status']) =>
+  status === 'healthy' ? 'ok' : status === 'degraded' ? 'warn' : status === 'unhealthy' ? 'error' : '';
+
 export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
   onModelSwitched,
   refreshTrigger = 0,
@@ -41,16 +45,25 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
   const [modelToDelete, setModelToDelete] = useState<CustomCloudModel | null>(null);
   const [testingModel, setTestingModel] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, ModelTestResult>>({});
+  const [modelHealth, setModelHealth] = useState<Record<string, ModelHealthItem>>({});
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   const loadModels = async () => {
     try {
       setLoading(true);
-      const modelsRes = await fetchInstalledModels().catch(() => null);
+      const [modelsRes, healthRes] = await Promise.all([
+        fetchInstalledModels().catch(() => null),
+        fetchModelHealth(24).catch(() => null)
+      ]);
       if (modelsRes) {
         setOllamaModels(modelsRes.models || []);
         setCustomModels(modelsRes.customModels || []);
         if (modelsRes.activeModel) setGlobalModel(modelsRes.activeModel);
+      }
+      if (healthRes) {
+        setModelHealth(Object.fromEntries(
+          healthRes.models.map((item) => [normalizeModel(item.model), item])
+        ));
       }
     } catch (err) {
       console.error('Failed to load models:', err);
@@ -115,6 +128,7 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
   };
 
   const pinnedCount = (modelId: string) => applications.filter((app) => app.defaultModel === modelId).length;
+  const healthFor = (modelId: string) => modelHealth[normalizeModel(modelId)];
   const totalMounted = ollamaModels.length + customModels.length;
   const activeCustom = customModels.find(cm => normalizeModel(cm.modelId) === normalizeModel(globalModel));
   const activeLocal = ollamaModels.find(m => normalizeModel(m.name) === normalizeModel(globalModel));
@@ -264,6 +278,14 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                           <div>
                             <strong className="font-mono">{model.name}</strong>
                             <small>{model.family || 'Unknown family'}</small>
+                            {healthFor(model.name) && (
+                              <div
+                                className={`mp-test-pill ${healthClass(healthFor(model.name)!.status)}`}
+                                title={`${healthFor(model.name)!.successes}/${healthFor(model.name)!.requests} successful requests in the last 24h`}
+                              >
+                                {healthFor(model.name)!.successRate}% success · {healthFor(model.name)!.requests} req
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -343,6 +365,14 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                           <div>
                             <strong>{model.displayName || model.modelId}</strong>
                             <small className="font-mono">{model.provider} · {model.modelId}</small>
+                            {healthFor(model.modelId) && (
+                              <div
+                                className={`mp-test-pill ${healthClass(healthFor(model.modelId)!.status)}`}
+                                title={`${healthFor(model.modelId)!.successes}/${healthFor(model.modelId)!.requests} successful requests in the last 24h`}
+                              >
+                                {healthFor(model.modelId)!.successRate}% success · {healthFor(model.modelId)!.requests} req
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>

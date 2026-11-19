@@ -3,6 +3,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { randomBytes } from 'node:crypto';
 
 const SCHEMA_VERSION = 4;
 const BACKUPS_TO_KEEP = 5;
@@ -183,7 +184,9 @@ function backupBeforeMigration(db, dbPath) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const baseName = path.basename(resolved, path.extname(resolved));
   const destination = path.join(backupDir, `${baseName}-${stamp}.db`);
-  const escaped = destination.replace(/'/g, "''");
+  // SQLite accepts forward slashes on every platform; this also avoids
+  // Windows backslashes being interpreted as SQL escape sequences.
+  const escaped = destination.replace(/\\/g, '/').replace(/'/g, "''");
 
   // Fail closed: do not migrate a database we could not back up first.
   db.exec(`VACUUM INTO '${escaped}'`);
@@ -230,12 +233,33 @@ export function initSchema(db, dbPath = process.env.DATABASE_PATH || './data/mon
   addColumn(db, 'usage_events', 'failover_attempts', 'INTEGER NOT NULL DEFAULT 0');
   addColumn(db, 'usage_events', 'failover_trace', 'TEXT');
 
-  // A legacy database may contain duplicate API keys; that is a data problem,
-  // not a reason to refuse to start.
+  // A legacy database may contain duplicate API keys, which makes API-key
+  // lookup ambiguous. Keep the oldest application for each key and issue a
+  // fresh key for later duplicates, then enforce uniqueness at the DB level.
   try {
+    const duplicates = db.prepare(`
+      SELECT api_key
+      FROM applications
+      WHERE api_key IS NOT NULL AND TRIM(api_key) != ''
+      GROUP BY api_key
+      HAVING COUNT(*) > 1
+    `).all();
+
+    const updateKey = db.prepare('UPDATE applications SET api_key = ?, updated_at = ? WHERE id = ?');
+    const now = new Date().toISOString();
+    for (const { api_key: duplicateKey } of duplicates) {
+      const apps = db.prepare(
+        'SELECT id FROM applications WHERE api_key = ? ORDER BY created_at ASC, id ASC'
+      ).all(duplicateKey);
+      for (const app of apps.slice(1)) {
+        updateKey.run(`mp_live_${randomBytes(16).toString('hex')}`, now, app.id);
+      }
+      console.warn(`[SCHEMA] Repaired duplicate API key for ${apps.length - 1} application(s).`);
+    }
+
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_api_key ON applications(api_key) WHERE api_key IS NOT NULL');
   } catch (err) {
-    console.error('[SCHEMA] Could not create unique applications.api_key index (duplicate keys present?):', err.message);
+    console.error('[SCHEMA] Could not enforce unique applications.api_key index:', err.message);
   }
 
   recordVersion(db, SCHEMA_VERSION);

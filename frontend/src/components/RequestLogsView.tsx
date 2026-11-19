@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { RequestsResponse, ApplicationItem, UsageEventItem, FailoverTraceEntry } from '../types/analytics';
 import { fetchRequests } from '../api/client';
+import { copyText } from '../utils/clipboard';
+import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   ShieldCheckIcon,
   SearchIcon,
@@ -62,6 +64,7 @@ const FAILOVER_REASON_LABELS: Record<string, string> = {
   upstream_error: 'Provider error',
   invalid_response: 'Invalid response',
   budget_exceeded: 'Budget blocked',
+  circuit_open: 'Circuit open',
   success: 'Success',
   stream_started: 'Stream started'
 };
@@ -85,7 +88,7 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   const [activeTimeframe, setActiveTimeframe] = useState<'1h' | '24h' | '7d'>('24h');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [selectedItem, setSelectedItem] = useState<UsageEventItem | null>(null);
-  const [copied, setCopied] = useState<'request' | 'json' | null>(null);
+  const [copied, setCopied] = useState<'request' | 'json' | 'curl' | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -94,12 +97,13 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   }, [initialAppId]);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-      setPage(1);
-    }, 300);
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch]);
 
   const queryFilters = useCallback(() => ({
     appId: selectedApp !== 'all' ? selectedApp : undefined,
@@ -190,14 +194,18 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
     }
   };
 
-  const copyText = async (kind: 'request' | 'json') => {
+  const copyInspectorText = async (kind: 'request' | 'json' | 'curl') => {
+    if (!selectedItem) return;
     const text = kind === 'request'
-      ? (selectedItem?.request_id || '')
-      : JSON.stringify(selectedItem, null, 2);
+      ? selectedItem.request_id
+      : kind === 'curl'
+        ? `curl ${getBrowserGatewayBaseUrl()}/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer $SLIR_APP_KEY" \\\n  -H "X-Request-ID: ${selectedItem.trace_id || selectedItem.request_id}" \\\n  -d '{"model":"${selectedItem.client_model || selectedItem.model}","messages":[{"role":"user","content":"Hello"}]}'`
+        : JSON.stringify(selectedItem, null, 2);
     if (!text) return;
-    await navigator.clipboard.writeText(text);
-    setCopied(kind);
-    setTimeout(() => setCopied(null), 2000);
+    if (await copyText(text)) {
+      setCopied(kind);
+      setTimeout(() => setCopied(null), 2000);
+    }
   };
 
   const items = data?.items || [];
@@ -288,9 +296,10 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
 
           <div className="mp-toolbar-spacer" />
 
-          <label className="mp-checkbox">
+          <label className="mp-checkbox" title="Poll for new requests every 5 seconds">
             <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-            <span>Auto refresh</span>
+            <span>{autoRefresh ? 'Live tail' : 'Auto refresh'}</span>
+            {autoRefresh && <span className="mp-live-dot" aria-hidden="true" />}
           </label>
 
           <button className="mp-btn mp-btn-ghost" onClick={() => loadRequests(true)} disabled={loading}>
@@ -336,6 +345,14 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                       key={item.id}
                       className={current?.id === item.id ? 'selected' : ''}
                       onClick={() => setSelectedItem(item)}
+                      tabIndex={0}
+                      aria-selected={current?.id === item.id}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setSelectedItem(item);
+                        }
+                      }}
                     >
                       <td>
                         <div className="mp-table-primary font-mono">{parts.time}</div>
@@ -406,8 +423,11 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                 </div>
               </div>
               <div className="mp-inspector-actions">
-                <button className="mp-icon-btn" onClick={() => copyText('request')} title="Copy request ID">
+                <button className="mp-icon-btn" onClick={() => copyInspectorText('request')} title="Copy request ID">
                   {copied === 'request' ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+                </button>
+                <button className="mp-icon-btn" onClick={() => copyInspectorText('curl')} title="Copy as cURL">
+                  {copied === 'curl' ? <CheckIcon size={13} /> : <span className="font-mono" style={{ fontSize: '0.625rem' }}>cURL</span>}
                 </button>
                 <button className="mp-icon-btn" onClick={() => setSelectedItem(null)} title="Close detail" aria-label="Close detail">
                   <CloseIcon size={14} />
@@ -422,6 +442,7 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
 
             <div className="mp-detail-grid">
               <div><span>Application</span><strong>{current.application_name || current.application_id || 'Direct client'}</strong></div>
+              <div><span>Trace ID</span><strong className="font-mono" title={current.trace_id || undefined}>{current.trace_id || '—'}</strong></div>
               <div><span>Provider</span><strong>{current.provider}</strong></div>
               <div><span>Routed model</span><strong className="font-mono">{current.model}</strong></div>
               <div><span>Requested model</span><strong className="font-mono">{current.client_model || 'active-model'}</strong></div>
@@ -499,7 +520,7 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
             )}
 
             <div className="mp-inspector-footer">
-              <button className="mp-btn mp-btn-secondary" onClick={() => copyText('json')}>
+              <button className="mp-btn mp-btn-secondary" onClick={() => copyInspectorText('json')}>
                 {copied === 'json' ? 'Copied' : 'Copy telemetry JSON'}
               </button>
               {onReplayInPlayground && (

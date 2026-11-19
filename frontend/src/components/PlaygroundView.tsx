@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { TestPromptResult, ApplicationItem } from '../types/analytics';
 import { runTestPromptBenchmark } from '../api/client';
+import { copyText } from '../utils/clipboard';
+import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   CopyIcon,
   CheckIcon,
@@ -12,6 +14,7 @@ interface PlaygroundViewProps {
   installedModels?: string[];
   applications?: ApplicationItem[];
   activeModel?: string;
+  gatewayPort?: number;
   onBenchmarkComplete?: () => void;
 }
 
@@ -46,6 +49,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
   installedModels = ['active-model', 'qwen2.5:3b'],
   applications = [],
   activeModel = 'qwen2.5:3b',
+  gatewayPort,
   onBenchmarkComplete
 }) => {
   const [mode, setMode] = useState<'single' | 'compare'>('compare');
@@ -115,12 +119,18 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
     }
   };
 
-  const copyCurl = () => {
-    const curl = `curl http://localhost:4101/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer $SLIR_APP_KEY" \\\n  -d '{\n    "model": "${modelA}",\n    "messages": [\n      {"role": "system", "content": ${JSON.stringify(systemContext)}},\n      {"role": "user", "content": ${JSON.stringify(userPrompt)}}\n    ],\n    "temperature": ${temperature},
+  const copyCurl = async () => {
+    const curl = `curl ${getBrowserGatewayBaseUrl(gatewayPort)}/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer $SLIR_APP_KEY" \\\n  -d '{\n    "model": "${modelA}",\n    "messages": [\n      {"role": "system", "content": ${JSON.stringify(systemContext)}},\n      {"role": "user", "content": ${JSON.stringify(userPrompt)}}\n    ],\n    "temperature": ${temperature},
     "max_tokens": ${maxTokens}\n  }'`;
-    navigator.clipboard.writeText(curl);
+    if (!(await copyText(curl))) return;
     setCopiedCurl(true);
     setTimeout(() => setCopiedCurl(false), 2000);
+  };
+
+  const copyContent = async (content: string | undefined, setter: (value: boolean) => void) => {
+    if (!(await copyText(content || ''))) return;
+    setter(true);
+    setTimeout(() => setter(false), 2000);
   };
 
   return (
@@ -465,7 +475,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                   <span>Target: {modelA}</span>
                   <button
                     onClick={() => {
-                      navigator.clipboard.writeText(resultA?.content || '');
+                      copyContent(resultA?.content, setCopiedOutputA);
                       setCopiedOutputA(true);
                       setTimeout(() => setCopiedOutputA(false), 2000);
                     }}
@@ -525,7 +535,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                     <span>Target: {modelB}</span>
                     <button
                       onClick={() => {
-                        navigator.clipboard.writeText(resultB?.content || '');
+                        copyContent(resultB?.content, setCopiedOutputB);
                         setCopiedOutputB(true);
                         setTimeout(() => setCopiedOutputB(false), 2000);
                       }}

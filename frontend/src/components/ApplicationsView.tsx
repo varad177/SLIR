@@ -5,6 +5,7 @@ import { CreateAppModal } from './CreateAppModal';
 import { ConfirmModal } from './ConfirmModal';
 import { GatewayConnectionCard } from './GatewayConnectionCard';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
+import { copyText } from '../utils/clipboard';
 import {
   CopyIcon,
   CheckIcon,
@@ -57,8 +58,8 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
     }
   }, [applications]);
 
-  const handleCopy = (text: string, type: 'key' | 'url' | 'code') => {
-    navigator.clipboard.writeText(text);
+  const handleCopy = async (text: string, type: 'key' | 'url' | 'code') => {
+    if (!(await copyText(text))) return;
     if (type === 'key') {
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);

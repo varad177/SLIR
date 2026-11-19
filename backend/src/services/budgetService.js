@@ -16,6 +16,7 @@ const METRIC_SQL = {
 
 const blockCache = new Map();
 const BLOCK_CACHE_TTL_MS = 10 * 1000;
+const NEGATIVE_CACHE_TTL_MS = 2 * 1000;
 
 export function clearBudgetCaches() {
   blockCache.clear();
@@ -97,13 +98,17 @@ export function formatBudgetValue(metric, value) {
 function buildProjection(budget, usage, now) {
   const period = getBudgetPeriod(budget.period, now);
   const totalMs = period.endMs - period.startMs;
-  const elapsedMs = Math.max(60 * 1000, now.getTime() - period.startMs);
+  const actualElapsedMs = Math.max(1, now.getTime() - period.startMs);
+  const minimumElapsedMs = Math.max(60 * 1000, totalMs * 0.1);
+  const elapsedMs = Math.max(actualElapsedMs, minimumElapsedMs);
   const ratio = totalMs / elapsedMs;
   const projected = usage.value * ratio;
   return {
     projectedValue: budget.metric === 'requests' ? Math.round(projected) : Math.round(projected * 10000) / 10000,
+    projectedUsage: budget.metric === 'requests' ? Math.round(usage.value) : Math.round(usage.value * 10000) / 10000,
     percent: budget.limit_value > 0 ? Math.round((usage.value / budget.limit_value) * 1000) / 10 : 0,
-    projectedPercent: budget.limit_value > 0 ? Math.round((projected / budget.limit_value) * 1000) / 10 : 0
+    projectedPercent: budget.limit_value > 0 ? Math.round((projected / budget.limit_value) * 1000) / 10 : 0,
+    projectionReliable: actualElapsedMs >= minimumElapsedMs
   };
 }
 
@@ -177,8 +182,10 @@ export function getBlockingBudget(db, applicationId, eventModel, now = new Date(
 
   const cacheKey = `${applicationId}|${eventModel || ''}`;
   const cached = blockCache.get(cacheKey);
-  if (cached && now.getTime() - cached.at < BLOCK_CACHE_TTL_MS) {
-    return cached.budget;
+  if (cached) {
+    const ttl = cached.budget ? BLOCK_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS;
+    if (now.getTime() - cached.at < ttl) return cached.budget;
+    blockCache.delete(cacheKey);
   }
 
   let budgets = [];

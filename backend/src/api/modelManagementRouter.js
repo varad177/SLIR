@@ -124,6 +124,47 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
   });
 
   /**
+   * Recent per-model reliability used by the dashboard health indicators.
+   */
+  router.get('/health', (req, res) => {
+    try {
+      const hours = Math.min(168, Math.max(1, Number.parseInt(req.query.hours, 10) || 24));
+      const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      const rows = db.prepare(`
+        SELECT
+          model,
+          COUNT(*) AS requests,
+          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successes,
+          MAX(timestamp) AS last_seen
+        FROM usage_events
+        WHERE timestamp >= ?
+        GROUP BY model
+        ORDER BY requests DESC
+      `).all(cutoff);
+
+      const models = rows.map((row) => {
+        const requests = Number(row.requests) || 0;
+        const successes = Number(row.successes) || 0;
+        const successRate = requests > 0 ? Math.round((successes / requests) * 1000) / 10 : null;
+        return {
+          model: row.model,
+          requests,
+          successes,
+          failures: requests - successes,
+          successRate,
+          status: successRate === null ? 'unknown' : successRate >= 95 ? 'healthy' : successRate >= 80 ? 'degraded' : 'unhealthy',
+          lastSeen: row.last_seen
+        };
+      });
+
+      res.json({ windowHours: hours, generatedAt: new Date().toISOString(), models });
+    } catch (err) {
+      console.error('[MODEL-MGR] Error loading model health:', err);
+      res.status(500).json({ error: 'Failed to load model health' });
+    }
+  });
+
+  /**
    * 2. Get current active routing model
    */
   router.get('/active', (req, res) => {

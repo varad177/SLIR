@@ -63,7 +63,7 @@ function buildPayload(alert, budget) {
   };
 }
 
-async function postWebhook(url, payload) {
+async function postWebhookOnce(url, payload) {
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -73,12 +73,31 @@ async function postWebhook(url, payload) {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      return { ok: false, error: `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}` };
+      return {
+        ok: false,
+        retryable: res.status === 408 || res.status === 429 || res.status >= 500,
+        error: `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`
+      };
     }
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err?.message || 'Webhook request failed' };
+    return { ok: false, retryable: true, error: err?.message || 'Webhook request failed' };
   }
+}
+
+const WEBHOOK_RETRY_DELAYS_MS = [0, 500, 1500];
+
+async function postWebhook(url, payload) {
+  let lastResult = { ok: false, error: 'Webhook request failed' };
+  for (const delay of WEBHOOK_RETRY_DELAYS_MS) {
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    lastResult = await postWebhookOnce(url, payload);
+    if (lastResult.ok || lastResult.retryable === false) return lastResult;
+  }
+  return {
+    ...lastResult,
+    error: `${lastResult.error || 'Webhook request failed'} (after ${WEBHOOK_RETRY_DELAYS_MS.length} attempts)`
+  };
 }
 
 /**

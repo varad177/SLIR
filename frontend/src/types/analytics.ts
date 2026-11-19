@@ -40,6 +40,8 @@ export interface TimeSeriesPoint {
   cacheHitRate?: number;
   estimatedCost: number;
   avgLatencyMs: number;
+  latencyP95Ms?: number;
+  latencyP50Ms?: number;
 }
 
 export interface ModelMetric {
@@ -169,6 +171,22 @@ export interface CustomCloudModel {
   outputCostPerMillion?: number | null;
   timeoutMs?: number | null;
   createdAt?: string;
+}
+
+export interface ModelHealthItem {
+  model: string;
+  requests: number;
+  successes: number;
+  failures: number;
+  successRate: number | null;
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
+  lastSeen: string | null;
+}
+
+export interface ModelHealthResponse {
+  windowHours: number;
+  generatedAt: string;
+  models: ModelHealthItem[];
 }
 
 export interface ModelTestResult {
@@ -308,6 +326,8 @@ export interface BudgetItem {
   percent: number;
   projectedValue: number;
   projectedPercent: number;
+  projectedUsage?: number;
+  projectionReliable?: boolean;
   periodKey: string;
   periodStart: string;
   periodEnd: string;

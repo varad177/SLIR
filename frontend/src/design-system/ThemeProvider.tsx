@@ -94,11 +94,12 @@ function generateCSSVariables(): Record<string, string> {
 const cssVariables = generateCSSVariables();
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  // Dark remains the default for first-time users, but the toggle choice is
-  // persisted so light mode survives reloads.
+  // Use the saved choice when present, otherwise follow the operating system.
   const [theme, setThemeState] = useState<'dark' | 'light'>(() => {
     if (typeof window === 'undefined') return 'dark';
-    return window.localStorage.getItem('theme') === 'light' ? 'light' : 'dark';
+    const saved = window.localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
   const [reducedMotion, setReducedMotion] = useState(false);
 

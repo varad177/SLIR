@@ -26,6 +26,9 @@ import {
   eventModelForTarget,
   resolveModelTarget
 } from './services/gatewayFailover.js';
+import { logger } from './utils/logger.js';
+import { safeJsonStringify, truncateText } from './utils/safeJson.js';
+import { createRateLimiter } from './utils/rateLimit.js';
 
 // The .env file lives at the ai-usage-monitor project root, one level above
 // backend/, so an explicit path is required for `npm start` run from backend/.
@@ -34,11 +37,16 @@ const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../w
 dotenv.config({ path: process.env.DOTENV_PATH || path.join(projectRoot, '.env') });
 
 const app = express();
+app.disable('x-powered-by');
 const PORT = process.env.PORT || 4101;
 const INGEST_API_KEY = process.env.INGEST_API_KEY || 'dev-secret-key';
+const MAX_SSE_CAPTURE_BYTES = Math.max(
+  64 * 1024,
+  Number.parseInt(process.env.SSE_CAPTURE_MAX_BYTES || String(10 * 1024 * 1024), 10) || 10 * 1024 * 1024
+);
 
 if (INGEST_API_KEY === 'dev-secret-key') {
-  console.warn('[SECURITY] INGEST_API_KEY is the well-known default "dev-secret-key". Change it in .env before exposing this service.');
+  logger.warn('[SECURITY] INGEST_API_KEY is the well-known default "dev-secret-key". Change it in .env before exposing this service.');
 }
 
 /**
@@ -65,18 +73,31 @@ function bearerToken(req) {
 }
 
 /**
- * Pipes an upstream SSE response straight to the client while capturing the
- * bytes for post-hoc usage extraction. Nothing is buffered before headers are
- * sent, so time-to-first-token is preserved.
+ * Pipes an upstream SSE response straight to the client while capturing a
+ * bounded amount of bytes for post-hoc usage extraction. Nothing is buffered
+ * before headers are sent, so time-to-first-token is preserved and long
+ * streams cannot exhaust server memory.
  * @param {Response} upstreamRes
  * @param {import('express').Response} res
- * @returns {Promise<string>} the full upstream body text
+ * @returns {Promise<{text: string, truncated: boolean, error: string|null, clientDisconnected: boolean}>}
  */
 async function pipeSseAndCapture(upstreamRes, res) {
   const chunks = [];
+  let capturedBytes = 0;
+  let truncated = false;
+  let streamError = null;
+  let clientDisconnected = false;
+
   const capture = new Transform({
     transform(chunk, _enc, cb) {
-      chunks.push(Buffer.from(chunk));
+      const buffer = Buffer.from(chunk);
+      const remaining = MAX_SSE_CAPTURE_BYTES - capturedBytes;
+      if (remaining > 0) {
+        const slice = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer;
+        chunks.push(slice);
+        capturedBytes += slice.length;
+      }
+      if (buffer.length > remaining) truncated = true;
       cb(null, chunk);
     }
   });
@@ -94,18 +115,24 @@ async function pipeSseAndCapture(upstreamRes, res) {
   try {
     await pipeline(Readable.fromWeb(upstreamRes.body), capture, res);
   } catch (err) {
+    streamError = err?.message || 'SSE pipe error';
     // A client that disconnects mid-stream is normal, not a server fault
-    const premature = err?.code === 'ERR_STREAM_PREMATURE_CLOSE' || /premature close/i.test(err?.message || '');
-    if (!premature) console.error('[GATEWAY] SSE pipe error:', err.message);
+    clientDisconnected = err?.code === 'ERR_STREAM_PREMATURE_CLOSE' || /premature close/i.test(streamError);
+    if (!clientDisconnected) logger.error('SSE pipe error', { message: streamError });
     if (!res.headersSent) res.status(502);
     if (!res.writableEnded) res.end();
   }
 
-  return Buffer.concat(chunks).toString('utf8');
+  return {
+    text: Buffer.concat(chunks).toString('utf8'),
+    truncated,
+    error: streamError,
+    clientDisconnected
+  };
 }
 
 /**
- * Picks the last well-formed SSE data payload out of a captured stream ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
+ * Picks the last well-formed SSE data payload out of a captured stream.
  * that chunk carries the final `usage` object from OpenAI-compatible APIs.
  * @param {string} text
  * @returns {Object|null}
@@ -135,9 +162,19 @@ app.use(cors({
     // Non-browser / same-origin requests carry no Origin header
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
     return callback(null, false);
-  }
+  },
+  exposedHeaders: ['X-Request-ID']
 }));
 app.use(express.json({ limit: '10mb' }));
+
+// Sensitive endpoints are rate limited per client IP. This is intentionally
+// lenient for a self-hosted dashboard but prevents accidental or hostile loops.
+app.use('/api/analytics/clear', createRateLimiter({ windowMs: 60_000, max: 5, keyPrefix: 'clear' }));
+app.use('/api/ingest/status', createRateLimiter({ windowMs: 60_000, max: 30, keyPrefix: 'ingest-status' }));
+app.use('/api/alerts/test', createRateLimiter({ windowMs: 60_000, max: 10, keyPrefix: 'alert-test' }));
+app.use('/api/models/custom/test', createRateLimiter({ windowMs: 60_000, max: 30, keyPrefix: 'model-test' }));
+app.use('/api/models/profile', createRateLimiter({ windowMs: 60_000, max: 20, keyPrefix: 'profile' }));
+app.use('/api/models/test-prompt', createRateLimiter({ windowMs: 60_000, max: 60, keyPrefix: 'test-prompt' }));
 
 // Global DB & Service references
 let db = null;
@@ -180,7 +217,7 @@ export function initializeDatabase() {
 
       // Periodically evaluate budget thresholds and dispatch notifications.
       budgetTimer = setInterval(() => {
-        evaluateBudgets(db).catch(err => console.error('[BUDGETS] Evaluation failed:', err.message));
+        evaluateBudgets(db).catch(err => logger.error('[BUDGETS] Evaluation failed', { error: err.message }));
       }, 30 * 1000);
       budgetTimer.unref?.();
       if (existsSync(webRoot)) {
@@ -231,6 +268,10 @@ app.get(['/v1/models', '/api/v1/models'], async (req, res) => {
  */
 app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) => {
   const reqStart = performance.now();
+  const requestId = typeof req.headers['x-request-id'] === 'string' && req.headers['x-request-id'].trim()
+    ? req.headers['x-request-id'].trim().slice(0, 128)
+    : `req_${crypto.randomUUID()}`;
+  res.setHeader('X-Request-ID', requestId);
   let appId = null;
   let isDirectClient = false;
   let appRow = null;
@@ -240,7 +281,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
     if (!isDirectClient || !repo) return;
     try {
       repo.saveEvent({
-        traceId: null,
+        traceId: requestId,
         applicationId: appId,
         callType: 'chat.completion',
         tokensEstimated: 0,
@@ -250,7 +291,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
         ...fields
       });
     } catch (e) {
-      console.error('[GATEWAY] Error persisting direct event:', e.message);
+      logger.error('Error persisting direct event', { requestId, message: e.message });
     }
   };
 
@@ -288,7 +329,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       failoverFromModel: primaryModel,
       failoverReason: reason,
       failoverAttempts: attempts,
-      failoverTrace: JSON.stringify(trace)
+      failoverTrace: safeJsonStringify(trace, '[]')
     };
   };
 
@@ -304,7 +345,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
               'SELECT id, name, default_model, failover_enabled, fallback_models FROM applications WHERE api_key = ?'
             ).get(token);
           } catch (e) {
-            console.error('[GATEWAY] API key lookup failed:', e.message);
+            logger.error('[GATEWAY] API key lookup failed', { error: e.message });
           }
         }
         if (!appRow) {
@@ -473,30 +514,39 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
 
     if (success.mode === 'stream') {
       const latencyMs = Math.round((performance.now() - reqStart) * 10) / 10;
-      let captured;
-      try {
-        captured = await pipeSseAndCapture(success.upstreamRes, res);
-      } catch (err) {
-        persistFailure({ errorType: 'stream_error', errorMessage: err.message, ...failover });
-        throw err;
-      }
-      const finalChunk = extractSseUsage(captured) || {};
+      const captureResult = await pipeSseAndCapture(success.upstreamRes, res);
+      const finalChunk = extractSseUsage(captureResult.text) || {};
       const usage = finalChunk.usage || {};
       const cached = usage.prompt_tokens_details?.cached_tokens;
+      const usageFields = {
+        promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
+        completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
+        totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
+        promptEvalDurationMs: null,
+        evalDurationMs: null,
+        loadDurationMs: null,
+        cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown'
+      };
+
+      if (captureResult.error) {
+        persistFailure({
+          errorType: captureResult.clientDisconnected ? 'client_disconnect' : 'stream_error',
+          errorMessage: truncateText(captureResult.error),
+          httpStatus: captureResult.clientDisconnected ? 499 : 502,
+          ...usageFields,
+          ...failover
+        });
+        return;
+      }
+
       persistEvent({
         requestId: finalChunk.id || `chatcmpl-${crypto.randomUUID()}`,
         provider: success.provider,
         model: success.eventModel,
         status: 'success',
         isStreaming: 1,
-        promptTokens: Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null,
-        completionTokens: Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null,
-        totalTokens: Number.isFinite(usage.total_tokens) ? usage.total_tokens : null,
         latencyMs,
-        promptEvalDurationMs: null,
-        evalDurationMs: null,
-        loadDurationMs: null,
-        cacheStatus: typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown',
+        ...usageFields,
         ...failover
       });
       return;
@@ -522,20 +572,20 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
     });
     return res.status(200).json(data);
   } catch (err) {
-    console.error('[DYNAMIC-ROUTER] Routing error:', err);
+    logger.error('Dynamic routing error', { requestId, message: err.message, stack: err.stack });
     if (failureInfo) {
-      persistFailure({ errorType: 'gateway_error', errorMessage: err.message, httpStatus: 500 });
+      persistFailure({ errorType: 'gateway_error', errorMessage: truncateText(err.message), httpStatus: 500 });
     }
     if (res.headersSent) {
       if (!res.writableEnded) res.end();
       return;
     }
-    res.status(500).json({ error: { message: 'Internal routing error' } });
+    res.status(500).json({ error: { message: 'Internal routing error', requestId } });
   }
 });
 
 /**
- * Health Check Endpoint ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â reports unhealthy when the DB cannot be reached so
+ * Public runtime configuration consumed by the browser UI.
  * container orchestrators do not route traffic to a dead instance.
  */
 app.get('/api/config', (req, res) => {
@@ -545,7 +595,96 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-app.get('/api/health', (req, res) => {
+let ollamaHealthCache = { at: 0, value: null };
+
+async function getOllamaHealth() {
+  if (!ollamaService) return { status: 'initializing' };
+  const now = Date.now();
+  if (ollamaHealthCache.value && now - ollamaHealthCache.at < 30 * 1000) {
+    return ollamaHealthCache.value;
+  }
+  try {
+    const result = await ollamaService.getInstalledModels();
+    const value = {
+      status: result.success ? 'ok' : 'unavailable',
+      host: result.host || null,
+      modelCount: result.models?.length || 0,
+      warning: result.warning || null
+    };
+    ollamaHealthCache = { at: now, value };
+    return value;
+  } catch (err) {
+    const value = { status: 'error', message: err.message };
+    ollamaHealthCache = { at: now, value };
+    return value;
+  }
+}
+
+app.get('/api/metrics', (req, res) => {
+  if (!db) {
+    res.status(503).type('text/plain').send('# SLIR database is still initializing\n');
+    return;
+  }
+  try {
+    const totals = db.prepare(`
+      SELECT
+        COUNT(*) AS requests,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN failover_used = 1 THEN 1 ELSE 0 END) AS failovers,
+        COALESCE(SUM(total_tokens), 0) AS tokens,
+        COALESCE(SUM(estimated_cost), 0) AS cost,
+        COALESCE(AVG(latency_ms), 0) AS avg_latency
+      FROM usage_events
+    `).get();
+    const byModel = db.prepare(`
+      SELECT model, COUNT(*) AS requests,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successes,
+        COALESCE(AVG(latency_ms), 0) AS avg_latency
+      FROM usage_events
+      GROUP BY model
+    `).all();
+    const unacknowledged = db.prepare('SELECT COUNT(*) AS count FROM budget_alerts WHERE acknowledged = 0').get();
+    const lines = [
+      '# HELP slir_requests_total Total gateway requests persisted',
+      '# TYPE slir_requests_total counter',
+      `slir_requests_total ${Number(totals.requests) || 0}`,
+      '# TYPE slir_requests_success_total counter',
+      `slir_requests_success_total ${Number(totals.successes) || 0}`,
+      '# TYPE slir_failovers_total counter',
+      `slir_failovers_total ${Number(totals.failovers) || 0}`,
+      '# TYPE slir_tokens_total counter',
+      `slir_tokens_total ${Number(totals.tokens) || 0}`,
+      '# TYPE slir_cost_usd_total counter',
+      `slir_cost_usd_total ${Number(totals.cost) || 0}`,
+      '# TYPE slir_latency_ms_avg gauge',
+      `slir_latency_ms_avg ${Math.round(Number(totals.avg_latency) || 0)}`,
+      '# TYPE slir_budget_alerts_unacknowledged gauge',
+      `slir_budget_alerts_unacknowledged ${Number(unacknowledged?.count) || 0}`,
+      '# TYPE slir_uptime_seconds gauge',
+      `slir_uptime_seconds ${Math.floor(process.uptime())}`
+    ];
+    for (const row of byModel) {
+      const model = String(row.model || 'unknown').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const requests = Number(row.requests) || 0;
+      const successes = Number(row.successes) || 0;
+      lines.push(
+        `slir_model_requests_total{model="${model}"} ${requests}`,
+        `slir_model_success_total{model="${model}"} ${successes}`,
+        `slir_model_latency_ms_avg{model="${model}"} ${Math.round(Number(row.avg_latency) || 0)}`
+      );
+    }
+    res.type('text/plain; version=0.0.4').send(`${lines.join('\n')}\n`);
+  } catch (err) {
+    logger.error('Failed to build Prometheus metrics', { error: err.message });
+    res.status(500).type('text/plain').send('# metrics unavailable\n');
+  }
+});
+
+/**
+ * Health check endpoint reports unhealthy when the DB cannot be reached so
+ * container orchestrators do not route traffic to a dead instance.
+ */
+app.get('/api/health', async (req, res) => {
   const payload = {
     status: 'ok',
     dbType: db ? db.type : 'initializing',
@@ -557,9 +696,14 @@ app.get('/api/health', (req, res) => {
   }
   try {
     db.prepare('SELECT 1').get();
+    const deep = req.query.deep === '1' || req.query.deep === 'true';
+    if (deep) {
+      payload.dependencies = { ollama: await getOllamaHealth() };
+      if (payload.dependencies.ollama.status !== 'ok') payload.status = 'degraded';
+    }
     res.json(payload);
   } catch (err) {
-    console.error('[HEALTH] Database check failed:', err.message);
+    logger.error('Database health check failed', { message: err.message });
     res.status(503).json({ ...payload, status: 'error', dbType: db.type });
   }
 });
@@ -586,7 +730,7 @@ app.get('/api/ingest/status', requireAdmin, (req, res) => {
       recentEvents: recent
     });
   } catch (err) {
-    console.error('[INGEST-STATUS] Query failed:', err.message);
+    logger.error('[INGEST-STATUS] Query failed', { error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -613,7 +757,7 @@ function registerFallbackHandlers() {
     if (err?.type === 'entity.too.large') {
       return res.status(413).json({ error: { message: 'Request body too large' } });
     }
-    console.error('[ERROR] Unhandled:', err);
+    logger.error('Unhandled request error', { error: err?.stack || err?.message || String(err) });
     res.status(500).json({ error: { message: 'Internal server error' } });
   });
 }
@@ -627,7 +771,7 @@ if (isMain) {
   const shutdown = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[SERVER] ${signal} received, shutting down...`);
+    logger.info(`[SERVER] ${signal} received, shutting down...`);
     if (retentionTimer) clearInterval(retentionTimer);
     if (budgetTimer) clearInterval(budgetTimer);
     const done = () => {
@@ -645,19 +789,19 @@ if (isMain) {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('unhandledRejection', (reason) => {
-    console.error('[FATAL] Unhandled promise rejection:', reason);
+    logger.error('[FATAL] Unhandled promise rejection', { error: reason?.stack || String(reason) });
   });
   process.on('uncaughtException', (err) => {
-    console.error('[FATAL] Uncaught exception:', err);
+    logger.error('[FATAL] Uncaught exception', { error: err?.stack || err?.message || String(err) });
     shutdown('uncaughtException');
   });
 
   initializeDatabase().then(() => {
     server = app.listen(PORT, () => {
-      console.log(`[SERVER] AI Usage Monitor Backend listening on port ${PORT}`);
+      logger.info(`[SERVER] AI Usage Monitor Backend listening on port ${PORT}`);
     });
   }).catch(err => {
-    console.error('Failed to initialize database on startup:', err);
+    logger.error('Failed to initialize database on startup', { error: err?.stack || err?.message || String(err) });
     process.exit(1);
   });
 }

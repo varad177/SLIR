@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { fetchGatewayConfig, getGatewayConnectionOptions, type GatewayConnectionOption, type GatewayTarget } from '../utils/gatewayConnection';
+import { fetchGatewayConfig, getGatewayConnectionOptions, type GatewayTarget } from '../utils/gatewayConnection';
+import { copyText } from '../utils/clipboard';
 import { ChevronDownIcon, CopyIcon, CheckIcon } from './icons/Icons';
 
 interface GatewayConnectionCardProps {
@@ -15,16 +16,34 @@ export const GatewayConnectionCard: React.FC<GatewayConnectionCardProps> = ({
   compact = false,
   label = 'Gateway Base URL'
 }) => {
-  const options = useMemo(() => getGatewayConnectionOptions(), []);
   const [config, setConfig] = useState<{ publicBaseUrl: string | null; gatewayPort: number } | null>(null);
   const [selectedMode, setSelectedMode] = useState<GatewayTarget>('host');
   const [showDocker, setShowDocker] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+
+  const options = useMemo(
+    () => getGatewayConnectionOptions(config?.gatewayPort),
+    [config?.gatewayPort]
+  );
 
   useEffect(() => {
     let active = true;
-    fetchGatewayConfig().then((cfg) => active && setConfig(cfg));
-    return () => { active = false; };
+    const load = () => {
+      fetchGatewayConfig().then((cfg) => {
+        if (active) setConfig(cfg);
+      });
+    };
+    load();
+    const interval = setInterval(load, 30 * 1000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   const publicBaseUrl = config?.publicBaseUrl ?? null;
@@ -35,9 +54,9 @@ export const GatewayConnectionCard: React.FC<GatewayConnectionCardProps> = ({
   }, [resolved, onChange]);
 
   const copyUrl = async () => {
-    await navigator.clipboard.writeText(resolved);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const ok = await copyText(resolved);
+    setCopyState(ok ? 'copied' : 'error');
+    setTimeout(() => setCopyState('idle'), 2000);
   };
 
   const selectedOption = options.find((o) => o.target === selectedMode) ?? options[0];
@@ -61,8 +80,8 @@ export const GatewayConnectionCard: React.FC<GatewayConnectionCardProps> = ({
               onClick={copyUrl}
               style={{ padding: '0 14px', fontSize: '0.75rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '5px' }}
             >
-              {copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-              <span>{copied ? 'Copied' : 'Copy URL'}</span>
+              {copyState === 'copied' ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+              <span>{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy URL'}</span>
             </button>
           </div>
         </div>
@@ -91,8 +110,8 @@ export const GatewayConnectionCard: React.FC<GatewayConnectionCardProps> = ({
             onClick={copyUrl}
             style={{ padding: '0 14px', fontSize: '0.75rem', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '5px' }}
           >
-            {copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-            <span>{copied ? 'Copied' : 'Copy URL'}</span>
+            {copyState === 'copied' ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+            <span>{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy URL'}</span>
           </button>
         </div>
       </div>

@@ -25,13 +25,17 @@ import {
   SlidersIcon,
   CloseIcon
 } from './icons/Icons';
+import { copyText } from '../utils/clipboard';
+import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   ResponsiveContainer,
   AreaChart,
   Area,
   XAxis,
   YAxis,
-  Tooltip
+  Tooltip,
+  CartesianGrid,
+  Legend
 } from 'recharts';
 
 interface OverviewViewProps {
@@ -47,6 +51,7 @@ interface OverviewViewProps {
   activeModel?: string;
   applications?: ApplicationItem[];
   selectedAppId?: string | null;
+  gatewayPort?: number;
   allAppsScope?: boolean;
   onSelectAppId?: (appId: string | null) => void;
   activeTimeframe: '15m' | '1h' | '6h' | '24h' | '7d';
@@ -92,11 +97,15 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   allAppsScope = false,
   onSelectAppId,
   activeTimeframe,
-  onTimeframeChange
+  onTimeframeChange,
+  gatewayPort = 4101
 }) => {
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [pinging, setPinging] = useState(false);
   const [pingResult, setPingResult] = useState<{ ok: boolean; label: string } | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => typeof window !== 'undefined' && window.localStorage.getItem('slir-onboarding-dismissed') !== 'true'
+  );
 
   const [devConfig, setDevConfig] = useState<DevConfig>({ temperature: 0.7, num_ctx: 4096 });
   const [profiling, setProfiling] = useState(false);
@@ -107,6 +116,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const [benchmarks, setBenchmarks] = useState<ModelBenchmarkItem[]>([]);
   const [switching, setSwitching] = useState(false);
   const [switchFeedback, setSwitchFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [tokenChartHover, setTokenChartHover] = useState<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
 
   const activeApp = applications.find((app) => app.id === selectedAppId) || applications[0];
   const routingAppId = activeApp?.id || selectedAppId;
@@ -168,8 +178,8 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     }
   };
 
-  const handleCopyUrl = () => {
-    navigator.clipboard.writeText('http://localhost:4101/v1');
+  const handleCopyUrl = async () => {
+    if (!(await copyText(getBrowserGatewayBaseUrl(gatewayPort)))) return;
     setCopiedUrl(true);
     setTimeout(() => setCopiedUrl(false), 2000);
   };
@@ -268,6 +278,12 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const burnRate = summary?.burnRatePerDay ?? 0;
   const successRate = summary?.successRate ?? 0;
 
+  const cacheBadgeClass = `mp-badge ${cacheReported === 0 ? 'neutral' : cacheRate >= 50 ? 'success' : 'warn'}`;
+  const costBadgeClass = `mp-badge ${totalCost > 0 ? 'warn' : 'success'}`;
+  const requestsBadgeClass = totalReq === 0
+    ? 'mp-badge neutral'
+    : `mp-badge ${successRate >= 99 ? 'success' : successRate >= 95 ? 'warn' : 'danger'}`;
+
   const localModels = modelsData?.models || [];
   const customCloudModels = modelsData?.customModels || [];
   const activeCustom = customCloudModels.find(c => normalizeModel(c.modelId) === normalizeModel(effectiveModel));
@@ -295,7 +311,10 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       prompt: pt.promptTokens || 0,
       completion: pt.completionTokens || 0,
       total: pt.totalTokens || 0,
-      requests: pt.requests || 0
+      requests: pt.requests || 0,
+      avgLatency: pt.avgLatencyMs || 0,
+      p95Latency: pt.latencyP95Ms || 0,
+      p50Latency: pt.latencyP50Ms || 0
     };
   });
 
@@ -303,6 +322,43 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
   return (
     <div className="mp-overview">
+      {showOnboarding && totalReq === 0 && (
+        <section className="mp-onboarding-card">
+          <div className="mp-onboarding-copy">
+            <div className="mp-eyebrow">First run</div>
+            <h2>Get your first request through SLIR</h2>
+            <p>Three steps: create an application, confirm its model route, then send a test request and inspect the log.</p>
+          </div>
+          <div className="mp-onboarding-steps">
+            <button type="button" onClick={() => onNavigateToTab('apps')}>
+              <span>1</span>
+              <strong>Create or open an application</strong>
+              <small>Copy its virtual API key.</small>
+            </button>
+            <button type="button" onClick={() => onNavigateToTab('models')}>
+              <span>2</span>
+              <strong>Choose the active model</strong>
+              <small>Use a local Ollama model or a cloud endpoint.</small>
+            </button>
+            <button type="button" onClick={() => onNavigateToTab('playground')}>
+              <span>3</span>
+              <strong>Send a test request</strong>
+              <small>Requests appear in Logs with latency and tokens.</small>
+            </button>
+          </div>
+          <button
+            type="button"
+            className="mp-onboarding-dismiss"
+            onClick={() => {
+              window.localStorage.setItem('slir-onboarding-dismissed', 'true');
+              setShowOnboarding(false);
+            }}
+          >
+            Dismiss
+          </button>
+        </section>
+      )}
+
       <section className="mp-routing-card">
         <div className="mp-routing-main">
           <div className="mp-routing-heading">
@@ -386,7 +442,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
         <div className="mp-routing-footer">
           <div className="mp-url-chip font-mono">
-            <span>{'http://localhost:4101/v1'}</span>
+            <span>{getBrowserGatewayBaseUrl(gatewayPort)}</span>
             <button onClick={handleCopyUrl} title="Copy base URL" aria-label="Copy base URL">
               {copiedUrl ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
             </button>
@@ -501,9 +557,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         <div className="mp-kpi">
           <div className="mp-kpi-top">
             <span>Requests</span>
-            {totalReq === 0
-              ? <span className="mp-badge neutral">No data</span>
-              : <span className={`mp-badge ${successRate >= 99 ? 'success' : successRate >= 95 ? 'warn' : 'danger'}`}>{successRate}% success</span>}
+            <span className={requestsBadgeClass}>{totalReq === 0 ? 'No data' : successRate + '% success'}</span>
           </div>
           <div className="mp-kpi-value font-mono">{totalReq.toLocaleString()}</div>
           <div className="mp-kpi-foot">
@@ -515,7 +569,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         <div className="mp-kpi">
           <div className="mp-kpi-top">
             <span>Tokens</span>
-            <span className="mp-badge neutral">{totalTok > 0 ? `${Math.round((promptTok / totalTok) * 100)}% in` : 'No traffic'}</span>
+            <span className="mp-badge neutral">{totalTok > 0 ? Math.round((promptTok / totalTok) * 100) + '% in' : 'No traffic'}</span>
           </div>
           <div className="mp-kpi-value font-mono">{totalTok >= 1e6 ? `${(totalTok / 1e6).toFixed(2)}M` : totalTok.toLocaleString()}</div>
           <div className="mp-kpi-foot">
@@ -524,53 +578,10 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </div>
         </div>
 
-        <div className="mp-kpi">
+        <div className="mp-kpi mp-kpi-chart">
           <div className="mp-kpi-top">
-            <span>Latency p95</span>
-            <span className="mp-badge neutral">{activeTps > 0 ? `${activeTps} tok/s` : 'No sample'}</span>
-          </div>
-          <div className="mp-kpi-value font-mono">{totalReq > 0 ? formatLatency(p95Lat ?? avgLat) : '--'}</div>
-          <div className="mp-kpi-foot">
-            <span>avg {formatLatency(avgLat)}</span>
-            <span>p50 {p50Lat != null ? formatLatency(p50Lat) : '--'}</span>
-          </div>
-        </div>
-
-        <div className="mp-kpi">
-          <div className="mp-kpi-top">
-            <span>Prompt cache</span>
-            <span className={`mp-badge ${cacheReported === 0 ? 'neutral' : cacheRate >= 50 ? 'success' : 'warn'}`}>
-              {cacheReported > 0 ? `${cacheRate}% hit` : 'Not reported'}
-            </span>
-          </div>
-          <div className="mp-kpi-value font-mono">{cacheHits.toLocaleString()}</div>
-          <div className="mp-kpi-foot">
-            <span>{cacheReported.toLocaleString()} cache-reported</span>
-            <span>{activeLoadMs > 0 ? `load ${formatLatency(activeLoadMs)}` : 'load n/a'}</span>
-          </div>
-        </div>
-
-        <div className="mp-kpi">
-          <div className="mp-kpi-top">
-            <span>Estimated spend</span>
-            <span className={`mp-badge ${totalCost > 0 ? 'warn' : 'success'}`}>{totalCost > 0 ? 'Priced' : 'No cost'}</span>
-          </div>
-          <div className="mp-kpi-value font-mono">${totalCost.toFixed(4)}</div>
-          <div className="mp-kpi-foot">
-            <span>${burnRate.toFixed(2)}/day</span>
-            <span>~${projected30d.toFixed(2)} / 30d</span>
-          </div>
-        </div>
-      </section>
-
-      <section className="mp-overview-grid">
-        <div className="mp-card mp-chart-card">
-          <div className="mp-section-head">
-            <div>
-              <div className="mp-eyebrow">Throughput</div>
-              <div className="mp-section-title">Token volume</div>
-            </div>
-            <div className="mp-segmented font-mono">
+            <span>Token Volume</span>
+            <div className="mp-segmented font-mono mp-segmented-compact">
               {(['15m', '1h', '6h', '24h', '7d'] as const).map((tf) => (
                 <button
                   key={tf}
@@ -582,113 +593,70 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               ))}
             </div>
           </div>
-
-          <div className="mp-chart-legend font-mono">
-            <span><i className="prompt" /> Prompt</span>
-            <span><i className="completion" /> Completion</span>
-          </div>
-
-          <div className="mp-chart-body">
+          <div className="mp-kpi-chart-body"
+               onMouseEnter={(e) => setTokenChartHover({ active: true, x: e.clientX, y: e.clientY })}
+               onMouseLeave={() => setTokenChartHover({ active: false, x: 0, y: 0 })}
+               onMouseMove={(e) => setTokenChartHover(prev => prev.active ? { ...prev, x: e.clientX, y: e.clientY } : prev)}>
             {chartData.length === 0 ? (
-              <div className="mp-empty">
-                <strong>No traffic in this window</strong>
-                <span>Send a request through an application key or the Playground to populate this chart.</span>
+              <div className="mp-empty compact" style={{ padding: '20px', textAlign: 'center' }}>
+                <strong>No token data</strong>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
                   <defs>
-                    <linearGradient id="promptGrad" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="promptGradKpi" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="var(--mp-orange)" stopOpacity={0.32} />
                       <stop offset="95%" stopColor="var(--mp-orange)" stopOpacity={0} />
                     </linearGradient>
-                    <linearGradient id="completionGrad" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="completionGradKpi" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="var(--mp-cyan)" stopOpacity={0.28} />
                       <stop offset="95%" stopColor="var(--mp-cyan)" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <XAxis dataKey="time" stroke="#334155" fontSize={10} tickLine={false} fontFamily="JetBrains Mono" />
-                  <YAxis stroke="#334155" fontSize={10} tickLine={false} fontFamily="JetBrains Mono" tickFormatter={(val) => val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val} />
+                  <XAxis dataKey="time" stroke="#334155" fontSize={9} tickLine={false} fontFamily="JetBrains Mono" interval="preserveStartEnd" />
+                  <YAxis stroke="#334155" fontSize={9} tickLine={false} fontFamily="JetBrains Mono" tickFormatter={(val) => val >= 1000 ? (val / 1000).toFixed(0) + 'k' : val} />
                   <Tooltip
                     contentStyle={{ background: 'var(--mp-surface-input)', borderColor: 'var(--mp-border)', borderRadius: '6px', fontSize: '11px', fontFamily: 'JetBrains Mono' }}
                     labelStyle={{ color: 'var(--mp-text-primary)', fontWeight: 600 }}
-                    formatter={(val: any, name: any) => [`${Number(val).toLocaleString()} tokens`, name === 'prompt' ? 'Prompt' : 'Completion']}
+                    formatter={(val: any, name: any) => [Number(val).toLocaleString() + ' tokens', name === 'prompt' ? 'Prompt' : 'Completion']}
                   />
-                  <Area type="monotone" dataKey="prompt" stroke="var(--mp-orange)" strokeWidth={2} fillOpacity={1} fill="url(#promptGrad)" />
-                  <Area type="monotone" dataKey="completion" stroke="var(--mp-cyan)" strokeWidth={2} fillOpacity={1} fill="url(#completionGrad)" />
+                  <Area type="monotone" dataKey="prompt" stroke="var(--mp-orange)" strokeWidth={2} fillOpacity={1} fill="url(#promptGradKpi)" />
+                  <Area type="monotone" dataKey="completion" stroke="var(--mp-cyan)" strokeWidth={2} fillOpacity={1} fill="url(#completionGradKpi)" />
                 </AreaChart>
               </ResponsiveContainer>
             )}
           </div>
+          <div className="mp-kpi-foot">
+            <span>{promptTok.toLocaleString()} prompt</span>
+            <span>{compTok.toLocaleString()} completion</span>
+          </div>
         </div>
 
-        <div className="mp-card mp-route-map">
-          <div className="mp-section-head">
-            <div>
-              <div className="mp-eyebrow">Available targets</div>
-              <div className="mp-section-title">Providers and models</div>
-            </div>
-            <span className="mp-muted font-mono">{localModels.length + customCloudModels.length} models</span>
+        <div className="mp-kpi">
+          <div className="mp-kpi-top">
+            <span>Prompt cache</span>
+            <span className={cacheBadgeClass}>
+              {cacheReported > 0 ? cacheRate + '% hit' : 'Not reported'}
+            </span>
           </div>
-
-          <div className="mp-target-list">
-            {localModels.length > 0 ? localModels.map((model) => {
-              const selected = normalizeModel(effectiveModel) === normalizeModel(model.name);
-              const benchmark = benchmarks.find(b => normalizeModel(b.model) === normalizeModel(model.name));
-              return (
-                <button
-                  key={model.name}
-                  className={`mp-target-row ${selected ? 'active' : ''}`}
-                  onClick={() => handleRoutingModelChange(model.name)}
-                  disabled={switching || !routingAppId}
-                >
-                  <span className="mp-target-main">
-                    <span className="mp-status-dot" />
-                    <span>
-                      <strong>{model.name}</strong>
-                      <small>Ollama · {model.parameterSize || 'local'} · {model.size}</small>
-                    </span>
-                  </span>
-                  <span className="mp-target-side font-mono" title={benchmark ? `avg ${formatLatency(benchmark.avgLatencyMs)}` : undefined}>
-                    {selected ? 'Selected' : benchmark ? `${formatLatency(benchmark.p95LatencyMs ?? benchmark.avgLatencyMs)} p95` : 'Pin'}
-                  </span>
-                </button>
-              );
-            }) : (
-              <div className="mp-empty compact">
-                <strong>No local models discovered</strong>
-                <span>Start Ollama or add a cloud endpoint in Models.</span>
-              </div>
-            )}
-
-            {customCloudModels.map((model) => {
-              const selected = normalizeModel(effectiveModel) === normalizeModel(model.modelId);
-              const benchmark = benchmarks.find(b => normalizeModel(b.model) === normalizeModel(model.modelId));
-              return (
-                <button
-                  key={model.modelId}
-                  className={`mp-target-row ${selected ? 'active' : ''}`}
-                  onClick={() => handleRoutingModelChange(model.modelId)}
-                  disabled={switching || !routingAppId}
-                >
-                  <span className="mp-target-main">
-                    <span className="mp-status-dot cloud" />
-                    <span>
-                      <strong>{model.displayName || model.modelId}</strong>
-                      <small>{model.provider} · {model.apiBase.replace(/^https?:\/\//, '').split('/')[0]}</small>
-                    </span>
-                  </span>
-                  <span className="mp-target-side font-mono" title={benchmark ? `avg ${formatLatency(benchmark.avgLatencyMs)}` : undefined}>
-                    {selected ? 'Selected' : benchmark ? `${formatLatency(benchmark.p95LatencyMs ?? benchmark.avgLatencyMs)} p95` : 'Pin'}
-                  </span>
-                </button>
-              );
-            })}
+          <div className="mp-kpi-value font-mono">{cacheHits.toLocaleString()}</div>
+          <div className="mp-kpi-foot">
+            <span>{cacheReported.toLocaleString()} cache-reported</span>
+            <span>{activeLoadMs > 0 ? 'load ' + formatLatency(activeLoadMs) : 'load n/a'}</span>
           </div>
+        </div>
 
-          <button className="mp-link-btn mp-route-map-link" onClick={() => onNavigateToTab('models')}>
-            Manage models <ChevronRightIcon size={11} />
-          </button>
+        <div className="mp-kpi">
+          <div className="mp-kpi-top">
+            <span>Estimated spend</span>
+            <span className={costBadgeClass}>{totalCost > 0 ? 'Priced' : 'No cost'}</span>
+          </div>
+          <div className="mp-kpi-value font-mono">${totalCost.toFixed(4)}</div>
+          <div className="mp-kpi-foot">
+            <span>$' + burnRate.toFixed(2) + '/day</span>
+            <span>~$' + projected30d.toFixed(2) + ' / 30d</span>
+          </div>
         </div>
       </section>
 
@@ -768,6 +736,116 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           <span>SQLite · WAL</span>
         </div>
       </section>
+
+      {tokenChartHover.active && chartData.length > 0 && (
+        <div
+          className="mp-chart-modal"
+          onClick={() => setTokenChartHover({ active: false, x: 0, y: 0 })}
+        >
+          <div className="mp-chart-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-chart-modal-header">
+              <div className="mp-section-title font-mono">Token Volume — Detail</div>
+              <button
+                className="mp-chart-modal-close"
+                onClick={() => setTokenChartHover({ active: false, x: 0, y: 0 })}
+                aria-label="Close"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div className="mp-chart-modal-body">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 40 }}>
+                  <defs>
+                    <linearGradient id="promptGradTip" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--mp-orange)" stopOpacity={0.32} />
+                      <stop offset="95%" stopColor="var(--mp-orange)" stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id="completionGradTip" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="var(--mp-cyan)" stopOpacity={0.28} />
+                      <stop offset="95%" stopColor="var(--mp-cyan)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="time"
+                    stroke="#334155"
+                    fontSize={12}
+                    tickLine={false}
+                    fontFamily="JetBrains Mono"
+                    interval="preserveStartEnd"
+                    tick={{ fill: 'var(--mp-text-muted)' }}
+                  />
+                  <YAxis
+                    stroke="#334155"
+                    fontSize={12}
+                    tickLine={false}
+                    fontFamily="JetBrains Mono"
+                    tickFormatter={(val) => val >= 1000 ? (val / 1000).toFixed(0) + 'k' : val}
+                    tick={{ fill: 'var(--mp-text-muted)' }}
+                    width={60}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: 'var(--mp-surface-input)',
+                      borderColor: 'var(--mp-border)',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontFamily: 'JetBrains Mono',
+                      padding: '12px 16px',
+                      boxShadow: '0 10px 40px rgba(0,0,0,0.3)'
+                    }}
+                    labelStyle={{ color: 'var(--mp-text-primary)', fontWeight: 600, fontSize: '12px' }}
+                    formatter={(val: any, name: any) => [
+                      Number(val).toLocaleString() + ' tokens',
+                      name === 'prompt' ? 'Prompt Tokens' : 'Completion Tokens'
+                    ]}
+                    itemStyle={{ padding: '4px 0' }}
+                    labelFormatter={(label) => {
+                      const point = chartData.find(d => d.time === label);
+                      if (point) {
+                        return `${label}  •  Total: ${(point.prompt + point.completion).toLocaleString()} tokens`;
+                      }
+                      return label;
+                    }}
+                  />
+                  <CartesianGrid strokeDasharray="4 4" stroke="#1e293b" vertical={false} />
+                  <Legend
+                    layout="horizontal"
+                    align="center"
+                    verticalAlign="bottom"
+                    iconType="circle"
+                    iconSize={10}
+                    wrapperStyle={{ paddingBottom: '10px', paddingTop: '5px' }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="prompt"
+                    name="Prompt"
+                    stroke="var(--mp-orange)"
+                    strokeWidth={3}
+                    fillOpacity={1}
+                    fill="url(#promptGradTip)"
+                    isAnimationActive={false}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="completion"
+                    name="Completion"
+                    stroke="var(--mp-cyan)"
+                    strokeWidth={3}
+                    fillOpacity={1}
+                    fill="url(#completionGradTip)"
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

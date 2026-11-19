@@ -5,7 +5,8 @@ import {
   BudgetItem,
   BudgetMetric,
   PricingRule,
-  ApplicationItem
+  ApplicationItem,
+  TimeSeriesPoint
 } from '../types/analytics';
 import {
   acknowledgeAlert,
@@ -17,12 +18,14 @@ import {
   fetchFilterOptions,
   fetchInstalledModels,
   fetchPricingRules,
+  fetchTimeSeries,
   sendTestAlert,
   updateAlertSettings,
   updateBudget
 } from '../api/client';
 import { BudgetModal } from './BudgetModal';
 import { PricingModal } from './PricingModal';
+import { copyText } from '../utils/clipboard';
 import {
   AlertTriangleIcon,
   CheckIcon,
@@ -37,6 +40,25 @@ interface CostsBudgetsViewProps {
   applications: ApplicationItem[];
   onAlertsChanged?: () => void;
 }
+
+const WEBHOOK_PAYLOAD_SAMPLE = JSON.stringify({
+  event: 'budget.threshold',
+  title: 'Budget warning',
+  text: '"Daily API budget" is approaching its daily cost budget: $7.50 of $10.00 (75%, all applications).',
+  content: '"Daily API budget" is approaching its daily cost budget: $7.50 of $10.00 (75%, all applications).',
+  threshold: 'warning',
+  budget: {
+    id: 1,
+    name: 'Daily API budget',
+    metric: 'cost',
+    period: 'daily',
+    scope: 'global',
+    limit: 10,
+    usage: 7.5,
+    percentage: 75
+  },
+  createdAt: new Date().toISOString()
+}, null, 2);
 
 const METRIC_LABEL: Record<BudgetMetric, string> = {
   cost: 'cost',
@@ -85,6 +107,8 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
   const [pricingOpen, setPricingOpen] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [testingWebhook, setTestingWebhook] = useState(false);
+  const [copiedPayload, setCopiedPayload] = useState(false);
+  const [costAnomaly, setCostAnomaly] = useState<string | null>(null);
 
   const loadModels = useCallback(async () => {
     try {
@@ -109,17 +133,32 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
     try {
       setLoading(true);
       setError(null);
-      const [budgetList, alertData, alertSettings, pricing] = await Promise.all([
+      const [budgetList, alertData, alertSettings, pricing, timeSeries] = await Promise.all([
         fetchBudgets(),
         fetchAlerts({ unacknowledged: unackOnly, limit: 100 }),
         fetchAlertSettings().catch(() => ({ webhookUrl: '', webhookEnabled: false })),
-        fetchPricingRules().catch(() => [] as PricingRule[])
+        fetchPricingRules().catch(() => [] as PricingRule[]),
+        fetchTimeSeries({ interval: 'day', start: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() }).catch(() => [] as TimeSeriesPoint[])
       ]);
       setBudgets(budgetList);
       setAlerts(alertData.items || []);
       setUnacknowledged(alertData.unacknowledged || 0);
       setSettings(alertSettings);
       setPricingRules(pricing);
+
+      if (timeSeries.length >= 2) {
+        const daily = timeSeries.filter((p) => p.estimatedCost > 0);
+        if (daily.length >= 2) {
+          const today = daily[daily.length - 1].estimatedCost;
+          const previous = daily.slice(0, -1);
+          const avg = previous.reduce((sum, p) => sum + p.estimatedCost, 0) / previous.length;
+          if (avg > 0 && today > avg * 2) {
+            setCostAnomaly(`Today's spend ($${today.toFixed(2)}) is ${(today / avg).toFixed(1)}x the 7-day average ($${avg.toFixed(2)}).`);
+          } else {
+            setCostAnomaly(null);
+          }
+        }
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load budgets and alerts.');
     } finally {
@@ -349,8 +388,10 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
                     />
                   </div>
                   <div className="mp-budget-projection">
-                    Projected {formatValue(budget.metric, budget.projectedValue)} by period end
-                    {budget.metric === 'cost' && budget.projectedPercent > 100 ? ' (over limit)' : ''}
+                    {budget.projectionReliable === false
+                      ? 'Early estimate: not enough of this period has elapsed for a reliable projection.'
+                      : `Projected ${formatValue(budget.metric, budget.projectedValue)} by period end`}
+                    {budget.projectionReliable !== false && budget.metric === 'cost' && budget.projectedPercent > 100 ? ' (over limit)' : ''}
                   </div>
                 </div>
 
@@ -449,8 +490,14 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
 
       <div className="mp-section-header">
         <div>
-          <div className="mp-eyebrow">Delivery</div>
-          <h2 className="mp-section-title">Webhook settings</h2>
+{costAnomaly && (
+        <div className="mp-anomaly-banner" role="alert" aria-live="polite">
+          <AlertTriangleIcon size={14} />
+          <span>Cost anomaly detected: {costAnomaly}</span>
+        </div>
+      )}
+      <div className="mp-eyebrow">Delivery</div>
+      <h2 className="mp-section-title">Webhook settings</h2>
         </div>
       </div>
 
@@ -489,6 +536,28 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
             </div>
           </div>
         </div>
+        <details className="mp-webhook-sample">
+          <summary>Payload preview for Slack, Discord, and generic receivers</summary>
+          <p>
+            SLIR posts the same JSON to every URL. Slack reads <code>text</code>, Discord reads <code>content</code>,
+            and PagerDuty/Opsgenie can route on <code>event</code>, <code>threshold</code>, and <code>budget</code>.
+          </p>
+          <div className="mp-webhook-sample-head">
+            <span>Sample budget warning</span>
+            <button
+              type="button"
+              className="mp-btn mp-btn-ghost"
+              onClick={async () => {
+                if (!(await copyText(WEBHOOK_PAYLOAD_SAMPLE))) return;
+                setCopiedPayload(true);
+                setTimeout(() => setCopiedPayload(false), 2000);
+              }}
+            >
+              {copiedPayload ? 'Copied' : 'Copy JSON'}
+            </button>
+          </div>
+          <pre>{WEBHOOK_PAYLOAD_SAMPLE}</pre>
+        </details>
       </div>
 
       <BudgetModal

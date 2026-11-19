@@ -21,9 +21,13 @@ import { RequestLogsView } from './components/RequestLogsView';
 import { ModelsHubView } from './components/ModelsHubView';
 import { CostsBudgetsView } from './components/CostsBudgetsView';
 import { FailoverView } from './components/FailoverView';
+import { HelpView } from './components/HelpView';
+import { CommandPalette } from './components/CommandPalette';
 import { ResetDbModal } from './components/ResetDbModal';
 import { CopyIcon, CheckIcon, CloseIcon, BellIcon, SunIcon, MoonIcon } from './components/icons/Icons';
 import { useTheme } from './design-system/ThemeProvider';
+import { DEFAULT_GATEWAY_PORT, fetchGatewayConfig, getBrowserGatewayBaseUrl } from './utils/gatewayConnection';
+import { copyText } from './utils/clipboard';
 
 export type OverviewTimeframe = '15m' | '1h' | '6h' | '24h' | '7d';
 
@@ -50,8 +54,13 @@ export const App: React.FC = () => {
   const [overviewTimeframe, setOverviewTimeframe] = useState<OverviewTimeframe>('24h');
   const [copiedConfig, setCopiedConfig] = useState<boolean>(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
+  const [commandOpen, setCommandOpen] = useState<boolean>(false);
   const [resetNotification, setResetNotification] = useState<string | null>(null);
   const [gatewayOnline, setGatewayOnline] = useState<boolean | null>(null);
+  const [browserOnline, setBrowserOnline] = useState<boolean>(
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  );
+  const [gatewayPort, setGatewayPort] = useState<number>(DEFAULT_GATEWAY_PORT);
   const [unacknowledgedAlerts, setUnacknowledgedAlerts] = useState<number>(0);
 
   const refreshAlertCount = useCallback(async () => {
@@ -70,6 +79,66 @@ export const App: React.FC = () => {
   }, [refreshAlertCount]);
 
   useEffect(() => {
+    let gPressed = false;
+    let gTimer: number | undefined;
+    const shortcuts: Record<string, NavTab> = {
+      o: 'overview',
+      a: 'apps',
+      l: 'logs',
+      m: 'models',
+      c: 'costs',
+      f: 'failover',
+      p: 'playground',
+      h: 'help'
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandOpen((open) => !open);
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const typing = target?.matches('input, textarea, select, [contenteditable="true"]');
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+
+      if (event.key === '?') {
+        event.preventDefault();
+        setCurrentTab('help');
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 'g') {
+        gPressed = true;
+        window.clearTimeout(gTimer);
+        gTimer = window.setTimeout(() => { gPressed = false; }, 1200);
+        return;
+      }
+      if (gPressed && shortcuts[key]) {
+        event.preventDefault();
+        setCurrentTab(shortcuts[key]);
+        gPressed = false;
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.clearTimeout(gTimer);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => setBrowserOnline(true);
+    const onOffline = () => setBrowserOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
     let mounted = true;
     const checkHealth = async () => {
       try {
@@ -79,11 +148,18 @@ export const App: React.FC = () => {
         if (mounted) setGatewayOnline(false);
       }
     };
+    const loadGatewayConfig = async () => {
+      const config = await fetchGatewayConfig();
+      if (mounted) setGatewayPort(config.gatewayPort);
+    };
     checkHealth();
+    loadGatewayConfig();
     const interval = setInterval(checkHealth, 15000);
+    const configInterval = setInterval(loadGatewayConfig, 30 * 1000);
     return () => {
       mounted = false;
       clearInterval(interval);
+      clearInterval(configInterval);
     };
   }, []);
 
@@ -141,13 +217,14 @@ export const App: React.FC = () => {
     loadDashboardData();
   };
 
-  const copyConfigSnippet = () => {
+  const copyConfigSnippet = async () => {
     const app = applications.find((candidate) => candidate.id === selectedAppId) || applications[0];
     const apiKey = app?.apiKey || '<your-application-key>';
-    const config = `Base URL: http://localhost:4101/v1\nModel: active-model\nAuthorization: Bearer ${apiKey}`;
-    navigator.clipboard.writeText(config);
-    setCopiedConfig(true);
-    setTimeout(() => setCopiedConfig(false), 2000);
+    const config = `Base URL: ${getBrowserGatewayBaseUrl(gatewayPort)}\nModel: active-model\nAuthorization: Bearer ${apiKey}`;
+    if (await copyText(config)) {
+      setCopiedConfig(true);
+      setTimeout(() => setCopiedConfig(false), 2000);
+    }
   };
 
   const routingAppId = selectedAppId === null
@@ -203,6 +280,7 @@ export const App: React.FC = () => {
       case 'logs': return 'Request Logs';
       case 'costs': return 'Costs & Alerts';
       case 'failover': return 'Automatic Failover';
+      case 'help': return 'User Manual';
       default: return 'Gateway';
     }
   };
@@ -218,12 +296,22 @@ export const App: React.FC = () => {
         onSelectAppId={setSelectedAppId}
         appsCount={applications.length}
         activeModel={activeModel}
-        gatewayPort={4101}
+        gatewayPort={gatewayPort}
         gatewayOnline={gatewayOnline}
       />
 
       {/* 2. Main Content Area */}
       <div className="mp-main-content">
+        {(!browserOnline || gatewayOnline === false) && (
+          <div className="mp-connection-banner" role="status">
+            <span className="mp-pulse-dot" />
+            <span>
+              {!browserOnline
+                ? 'You are offline. Dashboard data may be stale.'
+                : 'SLIR gateway is unreachable. Check that the backend is running and the gateway port is mapped.'}
+            </span>
+          </div>
+        )}
         {/* Top Navbar */}
         <header className="mp-topbar">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -411,6 +499,7 @@ export const App: React.FC = () => {
               onSelectAppId={(appId) => setSelectedAppId(appId)}
               activeTimeframe={overviewTimeframe}
               onTimeframeChange={setOverviewTimeframe}
+              gatewayPort={gatewayPort}
             />
           )}
 
@@ -419,6 +508,7 @@ export const App: React.FC = () => {
               installedModels={installedModels}
               applications={applications}
               activeModel={activeModel}
+              gatewayPort={gatewayPort}
               onBenchmarkComplete={handleBenchmarkComplete}
             />
           )}
@@ -465,8 +555,26 @@ export const App: React.FC = () => {
               onApplicationsChanged={loadDashboardData}
             />
           )}
+
+          {currentTab === 'help' && (
+            <HelpView
+              applications={applications}
+              selectedAppId={selectedAppId ?? null}
+              activeModel={activeModel}
+              gatewayPort={gatewayPort}
+              onNavigateToTab={setCurrentTab}
+            />
+          )}
         </main>
       </div>
+
+      <CommandPalette
+        open={commandOpen}
+        applications={applications}
+        onClose={() => setCommandOpen(false)}
+        onNavigate={setCurrentTab}
+        onSelectApp={setSelectedAppId}
+      />
 
       {/* Global Reset Database Modal */}
       <ResetDbModal

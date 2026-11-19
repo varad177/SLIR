@@ -1,8 +1,43 @@
-const CLOUD_DEFAULT_TIMEOUT_MS = 60000;
-const LOCAL_TIMEOUT_MS = 90000;
+import {
+  CLOUD_DEFAULT_TIMEOUT_MS,
+  LOCAL_TIMEOUT_MS,
+  getOllamaUrls,
+  normalizeModelId
+} from './ollamaEndpoints.js';
 
-function normalizeModelId(model) {
-  return String(model || '').trim().replace(/^ollama\//, '');
+const CIRCUIT_FAILURE_THRESHOLD = Number(process.env.FAILOVER_CIRCUIT_FAILURES) || 5;
+const CIRCUIT_COOLDOWN_MS = Number(process.env.FAILOVER_CIRCUIT_COOLDOWN_MS) || 30000;
+const CIRCUIT_BREAKER_ENABLED = process.env.FAILOVER_CIRCUIT_BREAKER !== 'false';
+const circuitState = new Map();
+
+function circuitKey(target) {
+  return `${target.kind}:${target.model}`;
+}
+
+function isCircuitOpen(target, now = Date.now()) {
+  if (!CIRCUIT_BREAKER_ENABLED) return false;
+  const state = circuitState.get(circuitKey(target));
+  return Boolean(state && state.openUntil > now);
+}
+
+function recordCircuitSuccess(target) {
+  circuitState.delete(circuitKey(target));
+}
+
+function recordCircuitFailure(target, reason) {
+  if (!CIRCUIT_BREAKER_ENABLED) return;
+  if (!['network_error', 'timeout', 'upstream_5xx'].includes(reason)) return;
+  const key = circuitKey(target);
+  const current = circuitState.get(key);
+  const failures = (current?.failures || 0) + 1;
+  circuitState.set(key, {
+    failures,
+    openUntil: failures >= CIRCUIT_FAILURE_THRESHOLD ? Date.now() + CIRCUIT_COOLDOWN_MS : 0
+  });
+}
+
+export function clearCircuitBreakers() {
+  circuitState.clear();
 }
 
 function finiteOrNull(value) {
@@ -114,16 +149,6 @@ export function resolveModelTarget(db, model) {
 
 export function eventModelForTarget(target) {
   return target.kind === 'cloud' ? target.model : `ollama/${target.model}`;
-}
-
-function getOllamaUrls() {
-  return [
-    process.env.OLLAMA_URL,
-    'http://localhost:11434',
-    'http://127.0.0.1:11434',
-    'http://host.docker.internal:11434',
-    'http://ollama:11434'
-  ].filter(Boolean);
 }
 
 async function executeCloudAttempt(target, reqBody, options) {
@@ -471,9 +496,28 @@ async function executeLocalAttempt(target, reqBody, options) {
 
 export async function executeModelAttempt(db, model, reqBody, options = {}) {
   const target = resolveModelTarget(db, model);
+
+  if (isCircuitOpen(target)) {
+    return {
+      ok: false,
+      retryable: true,
+      reason: 'circuit_open',
+      status: 503,
+      message: `Circuit breaker is open for ${target.kind} model ${target.model}`,
+      durationMs: 0,
+      target
+    };
+  }
+
   const result = target.kind === 'cloud'
     ? await executeCloudAttempt(target, reqBody, options)
     : await executeLocalAttempt(target, reqBody, options);
+
+  if (result.ok) {
+    recordCircuitSuccess(target);
+  } else {
+    recordCircuitFailure(target, result.reason);
+  }
 
   return {
     ...result,

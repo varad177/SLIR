@@ -31,6 +31,7 @@ const REASON_LABELS: Record<string, string> = {
   upstream_error: 'Provider error',
   invalid_response: 'Invalid response',
   budget_exceeded: 'Budget blocked',
+  circuit_open: 'Circuit open',
   success: 'Success',
   stream_started: 'Stream started'
 };
@@ -90,6 +91,10 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
     () => recentEvents.filter((event) => (event.failover_attempts || 0) > 0 || event.failover_used === 1),
     [recentEvents]
   );
+
+  const primaryLabel = activeApp?.defaultModel === 'active-model'
+    ? 'Global active model'
+    : activeApp?.defaultModel || 'Primary';
 
   const loadModels = useCallback(async () => {
     try {
@@ -305,6 +310,27 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
             </span>
           </label>
 
+          <div className={`mp-failover-route-preview ${enabled ? '' : 'disabled'}`}>
+            <div className="mp-failover-route-step primary">
+              <span>Primary</span>
+              <strong>{primaryLabel}</strong>
+            </div>
+            {fallbackModels.map((model, index) => (
+              <React.Fragment key={model}>
+                <span className="mp-failover-route-arrow">→</span>
+                <div className="mp-failover-route-step">
+                  <span>Fallback {index + 1}</span>
+                  <strong>{model}</strong>
+                </div>
+              </React.Fragment>
+            ))}
+            <span className="mp-failover-route-arrow">→</span>
+            <div className="mp-failover-route-step terminal">
+              <span>If all fail</span>
+              <strong>Request fails</strong>
+            </div>
+          </div>
+
           <div className={`mp-failover-chain ${enabled ? '' : 'disabled'}`}>
             {fallbackModels.length === 0 ? (
               <div className="mp-empty compact">
@@ -438,10 +464,11 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
                       <span>{event.failover_attempts || 0} fallback attempt(s)</span>
                       <span>{event.status}</span>
                     </div>
-                    {trace.length > 1 && (
+                    {trace.length > 0 && (
                       <div className="mp-failover-trace">
                         {trace.map((entry, index) => (
                           <span key={`${event.id}-${index}`} className="font-mono">
+                            <span className="mp-failover-trace-step">{index + 1}</span>
                             {entry.model}: {reasonLabel(entry.outcome)}
                           </span>
                         ))}

@@ -1,5 +1,8 @@
-import fs from 'fs';
-import path from 'path';
+import {
+  CLOUD_CONNECTION_TEST_TIMEOUT_MS,
+  LOCAL_TIMEOUT_MS,
+  getOllamaUrls
+} from './ollamaEndpoints.js';
 
 /**
  * Service for managing local Ollama models and dynamic model switching
@@ -24,13 +27,7 @@ export class OllamaService {
    * Fetches all models currently downloaded in the local Ollama instance
    */
   async getInstalledModels() {
-    const urls = [
-      this.ollamaUrl,
-      'http://localhost:11434',
-      'http://127.0.0.1:11434',
-      'http://host.docker.internal:11434',
-      'http://ollama:11434'
-    ].filter(Boolean);
+    const urls = getOllamaUrls(this.ollamaUrl);
 
     let lastError = null;
     for (const baseUrl of urls) {
@@ -301,13 +298,13 @@ export class OllamaService {
    * model id, and latency. Expected provider failures are returned, not thrown,
    * so the UI can show actionable diagnostics.
    */
-  async testModelConnection({ apiBase, apiKey, modelId, timeoutMs = 15000 }) {
+  async testModelConnection({ apiBase, apiKey, modelId, timeoutMs = CLOUD_CONNECTION_TEST_TIMEOUT_MS }) {
     if (!apiBase || !modelId) {
       return { ok: false, errorType: 'validation', message: 'API base URL and model ID are required.' };
     }
 
     const base = String(apiBase).trim().replace(/\/+$/, '');
-    const timeout = Math.max(2000, Math.min(Number(timeoutMs) || 15000, 60000));
+    const timeout = Math.max(2000, Math.min(Number(timeoutMs) || CLOUD_CONNECTION_TEST_TIMEOUT_MS, 60000));
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     const startedAt = performance.now();
@@ -542,13 +539,7 @@ export class OllamaService {
     }
 
     // Direct local Ollama endpoints (tries native /api/chat first to capture nanosecond cache & load timings)
-    const ollamaHosts = [
-      this.ollamaUrl,
-      'http://localhost:11434',
-      'http://127.0.0.1:11434',
-      'http://host.docker.internal:11434',
-      'http://ollama:11434'
-    ].filter(Boolean);
+    const ollamaHosts = getOllamaUrls(this.ollamaUrl);
 
     let lastError = null;
 
@@ -567,7 +558,7 @@ export class OllamaService {
             stream,
             ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {})
           }),
-          signal: AbortSignal.timeout(90000)
+          signal: AbortSignal.timeout(LOCAL_TIMEOUT_MS)
         });
 
         if (res.ok) {
@@ -737,13 +728,7 @@ export class OllamaService {
     }
 
     // Local Ollama endpoints
-    const ollamaHosts = [
-      this.ollamaUrl,
-      'http://localhost:11434',
-      'http://127.0.0.1:11434',
-      'http://host.docker.internal:11434',
-      'http://ollama:11434'
-    ].filter(Boolean);
+    const ollamaHosts = getOllamaUrls(this.ollamaUrl);
 
     let lastError = null;
 
@@ -763,7 +748,7 @@ export class OllamaService {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(reqPayload),
-          signal: AbortSignal.timeout(90000)
+          signal: AbortSignal.timeout(LOCAL_TIMEOUT_MS)
         });
 
         if (res.ok) {

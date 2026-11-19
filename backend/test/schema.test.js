@@ -109,6 +109,38 @@ test('legacy database is migrated, backed up, and keeps its rows', () => {
   }
 });
 
+test('duplicate application API keys are repaired and enforced as unique', () => {
+  const { dir, file } = makeTempDb();
+  const db = new Database(file);
+  try {
+    initSchema(db, file);
+    db.exec('DROP INDEX idx_applications_api_key');
+    const insert = db.prepare(
+      'INSERT INTO applications (id, name, api_key, created_at) VALUES (?, ?, ?, ?)'
+    );
+    insert.run('app_old', 'Old App', 'mp_live_duplicate', '2026-01-01T00:00:00.000Z');
+    insert.run('app_new', 'New App', 'mp_live_duplicate', '2026-01-02T00:00:00.000Z');
+
+    initSchema(db, file);
+
+    const rows = db.prepare(
+      'SELECT id, api_key FROM applications WHERE id IN (?, ?)'
+    ).all('app_old', 'app_new');
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row.api_key]));
+    assert.equal(byId.app_old, 'mp_live_duplicate');
+    assert.notEqual(byId.app_new, 'mp_live_duplicate');
+    assert.match(byId.app_new, /^mp_live_[a-f0-9]{32}$/);
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_applications_api_key'").get());
+    assert.throws(
+      () => insert.run('app_third', 'Third App', 'mp_live_duplicate', '2026-01-03T00:00:00.000Z'),
+      /UNIQUE constraint failed/
+    );
+  } finally {
+    db.close();
+    cleanup(dir);
+  }
+});
+
 test('initSchema is idempotent and does not create a second backup', () => {
   const { dir, file } = makeTempDb();
   const db = new Database(file);
