@@ -29,14 +29,15 @@ import { useTheme } from './design-system/ThemeProvider';
 import { DEFAULT_GATEWAY_PORT, fetchGatewayConfig, getBrowserGatewayBaseUrl } from './utils/gatewayConnection';
 import { copyText } from './utils/clipboard';
 
-export type OverviewTimeframe = '15m' | '1h' | '6h' | '24h' | '7d';
+export type OverviewTimeframe = '15m' | '1h' | '6h' | '24h' | '7d' | 'all';
 
 const OVERVIEW_TIMEFRAME_MS: Record<OverviewTimeframe, number> = {
   '15m': 15 * 60 * 1000,
   '1h': 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  'all': 0
 };
 
 export const App: React.FC = () => {
@@ -165,10 +166,11 @@ export const App: React.FC = () => {
 
   // Load telemetry data from backend
   const loadDashboardData = useCallback(async () => {
-    const timeframeStart = new Date(
-      Date.now() - OVERVIEW_TIMEFRAME_MS[overviewTimeframe]
-    ).toISOString();
-    const timeframeInterval = overviewTimeframe === '7d' ? 'day' : 'hour';
+    const isAllTime = overviewTimeframe === 'all';
+    const timeframeStart = isAllTime
+      ? undefined
+      : new Date(Date.now() - OVERVIEW_TIMEFRAME_MS[overviewTimeframe]).toISOString();
+    const timeframeInterval = isAllTime ? 'month' : overviewTimeframe === '7d' ? 'day' : 'hour';
     try {
       const [sumData, tsData, reqData, appsData, modelsData] = await Promise.all([
         fetchSummary({ interval: timeframeInterval, start: timeframeStart, appId: selectedAppId ?? undefined }).catch(() => null),

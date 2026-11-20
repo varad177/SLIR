@@ -54,8 +54,8 @@ interface OverviewViewProps {
   gatewayPort?: number;
   allAppsScope?: boolean;
   onSelectAppId?: (appId: string | null) => void;
-  activeTimeframe: '15m' | '1h' | '6h' | '24h' | '7d';
-  onTimeframeChange: (tf: '15m' | '1h' | '6h' | '24h' | '7d') => void;
+  activeTimeframe: '15m' | '1h' | '6h' | '24h' | '7d' | 'all';
+  onTimeframeChange: (tf: '15m' | '1h' | '6h' | '24h' | '7d' | 'all') => void;
 }
 
 const formatTimestampParts = (iso?: string) => {
@@ -582,7 +582,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           <div className="mp-kpi-top">
             <span>Token Volume</span>
             <div className="mp-segmented font-mono mp-segmented-compact">
-              {(['15m', '1h', '6h', '24h', '7d'] as const).map((tf) => (
+              {(['15m', '1h', '6h', '24h', '7d', 'all'] as const).map((tf) => (
                 <button
                   key={tf}
                   className={activeTimeframe === tf ? 'active' : ''}
@@ -621,8 +621,8 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                     labelStyle={{ color: 'var(--mp-text-primary)', fontWeight: 600 }}
                     formatter={(val: any, name: any) => [Number(val).toLocaleString() + ' tokens', name === 'prompt' ? 'Prompt' : 'Completion']}
                   />
-                  <Area type="monotone" dataKey="prompt" stroke="var(--mp-orange)" strokeWidth={2} fillOpacity={1} fill="url(#promptGradKpi)" />
-                  <Area type="monotone" dataKey="completion" stroke="var(--mp-cyan)" strokeWidth={2} fillOpacity={1} fill="url(#completionGradKpi)" />
+                  <Area type="linear" dataKey="prompt" stroke="var(--mp-orange)" strokeWidth={2} fillOpacity={1} fill="url(#promptGradKpi)" dot={false} />
+                  <Area type="linear" dataKey="completion" stroke="var(--mp-cyan)" strokeWidth={2} fillOpacity={1} fill="url(#completionGradKpi)" dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             )}
@@ -821,7 +821,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                     wrapperStyle={{ paddingBottom: '10px', paddingTop: '5px' }}
                   />
                   <Area
-                    type="monotone"
+                    type="linear"
                     dataKey="prompt"
                     name="Prompt"
                     stroke="var(--mp-orange)"
@@ -829,9 +829,10 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                     fillOpacity={1}
                     fill="url(#promptGradTip)"
                     isAnimationActive={false}
+                    dot={false}
                   />
                   <Area
-                    type="monotone"
+                    type="linear"
                     dataKey="completion"
                     name="Completion"
                     stroke="var(--mp-cyan)"
@@ -839,6 +840,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                     fillOpacity={1}
                     fill="url(#completionGradTip)"
                     isAnimationActive={false}
+                    dot={false}
                   />
                 </AreaChart>
               </ResponsiveContainer>
