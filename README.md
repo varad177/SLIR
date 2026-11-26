@@ -1,8 +1,7 @@
 # SLIR ⚡ (Switch LLM In Runtime)
 ### *One API. Any LLM. No Restart.*
 
-[![Docker Backend](https://img.shields.io/badge/Docker%20Hub-varad177%2Fslir--backend-blue?logo=docker)](https://hub.docker.com/r/varad177/slir-backend)
-[![Docker Frontend](https://img.shields.io/badge/Docker%20Hub-varad177%2Fslir--frontend-blue?logo=docker)](https://hub.docker.com/r/varad177/slir-frontend)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-varad177%2Fslir--app-blue?logo=docker)](https://hub.docker.com/r/varad177/slir-app)
 [![Release](https://img.shields.io/badge/release-v1.0.0-emerald)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -106,8 +105,8 @@ The production Dockerfile bundles the React dashboard and the Node.js gateway in
 ```bash
 docker compose up -d --build
 ```
-> The default `docker-compose.yml` builds `slir-app:latest` from `Dockerfile` with **zero configuration or `.env` file required**.
-> *(Optional)* To use an image that is already built or loaded, run: `SLIR_IMAGE=slir-app:v1.0.0 docker compose up -d`
+> The default `docker-compose.yml` uses `varad177/slir-app:latest` (or builds from `Dockerfile` with `--build`) with **zero configuration or `.env` file required**.
+> *(Optional)* To pin a release tag, run: `SLIR_IMAGE=varad177/slir-app:v1.0.0 docker compose up -d`
 
 * **Dashboard (Web UI):** [http://localhost:4100](http://localhost:4100)
 * **SLIR AI Gateway:** [http://localhost:4101/v1](http://localhost:4101/v1)
@@ -118,11 +117,11 @@ Both ports reach the same container listener; the dashboard uses relative `/api`
 
 ### Option A2: Build and export a single app image
 
-The root Dockerfile builds the frontend and bundles it into the Node.js backend image. Build and export that image:
+The root `Dockerfile` builds the frontend and bundles it into the Node.js backend image. Build and export that image:
 
 ```bash
-docker build -t slir-app:latest .
-docker save -o slir-app.tar slir-app:latest
+docker build -t varad177/slir-app:latest .
+docker save -o slir-app.tar varad177/slir-app:latest
 ```
 
 Copy `slir-app.tar` and `docker-compose.yml` to the other machine, then load and run:
@@ -136,18 +135,21 @@ The dashboard is available at `http://localhost:4100`; the API gateway is at `ht
 
 ---
 
-### Option B: Pull the split backend and frontend images
+### Option B: Pull and run from Docker Hub (Single Container)
 
-The earlier split images remain available on Docker Hub for custom multi-container deployments. The bundled production Compose file uses the single `slir-app` image instead.
+SLIR ships as a single unified image (`varad177/slir-app`) containing both the React dashboard and the Node.js gateway:
 
 ```bash
-# Pull version v1.0.0
-docker pull varad177/slir-backend:v1.0.0
-docker pull varad177/slir-frontend:v1.0.0
+# Pull the single image (:latest or pinned :v1.0.0)
+docker pull varad177/slir-app:latest
+docker pull varad177/slir-app:v1.0.0
 
-# Also tagged as :latest
-docker pull varad177/slir-backend:latest
-docker pull varad177/slir-frontend:latest
+# Run directly without cloning the repo
+docker run -d --name slir \
+  -p 4100:4101 -p 4101:4101 \
+  --add-host=host.docker.internal:host-gateway \
+  -v slir_data:/app/data \
+  varad177/slir-app:latest
 ```
 
 ---
