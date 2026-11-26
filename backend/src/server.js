@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
-import { Readable, Transform } from 'node:stream';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { getDatabase } from './db/connection.js';
 import { initSchema } from './db/schema.js';
@@ -29,6 +29,8 @@ import {
 import { logger } from './utils/logger.js';
 import { safeJsonStringify, truncateText } from './utils/safeJson.js';
 import { createRateLimiter } from './utils/rateLimit.js';
+import { anthropicToOpenAI, formatAnthropicError } from './adapters/anthropicIngress.js';
+import { createOpenAIToAnthropicStream, openAIToAnthropicResponse } from './adapters/anthropicEgress.js';
 
 // The .env file lives at the ai-usage-monitor project root, one level above
 // backend/, so an explicit path is required for `npm start` run from backend/.
@@ -77,19 +79,25 @@ function bearerToken(req) {
  * bounded amount of bytes for post-hoc usage extraction. Nothing is buffered
  * before headers are sent, so time-to-first-token is preserved and long
  * streams cannot exhaust server memory.
+ *
+ * When `clientTransform` is provided (e.g. converting OpenAI SSE to the
+ * Anthropic event format), capture happens on the original upstream bytes so
+ * usage extraction still sees OpenAI-shaped chunks.
+ *
  * @param {Response} upstreamRes
  * @param {import('express').Response} res
+ * @param {TransformStream|null} clientTransform
  * @returns {Promise<{text: string, truncated: boolean, error: string|null, clientDisconnected: boolean}>}
  */
-async function pipeSseAndCapture(upstreamRes, res) {
+async function pipeSseAndCapture(upstreamRes, res, clientTransform = null) {
   const chunks = [];
   let capturedBytes = 0;
   let truncated = false;
   let streamError = null;
   let clientDisconnected = false;
 
-  const capture = new Transform({
-    transform(chunk, _enc, cb) {
+  const capture = new TransformStream({
+    transform(chunk, controller) {
       const buffer = Buffer.from(chunk);
       const remaining = MAX_SSE_CAPTURE_BYTES - capturedBytes;
       if (remaining > 0) {
@@ -98,14 +106,17 @@ async function pipeSseAndCapture(upstreamRes, res) {
         capturedBytes += slice.length;
       }
       if (buffer.length > remaining) truncated = true;
-      cb(null, chunk);
+      controller.enqueue(chunk);
     }
   });
+
+  let body = upstreamRes.body.pipeThrough(capture);
+  if (clientTransform) body = body.pipeThrough(clientTransform);
 
   if (!res.headersSent) {
     res.status(200);
     res.set({
-      'Content-Type': upstreamRes.headers.get('content-type') || 'text/event-stream',
+      'Content-Type': clientTransform ? 'text/event-stream' : (upstreamRes.headers.get('content-type') || 'text/event-stream'),
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no'
@@ -113,7 +124,7 @@ async function pipeSseAndCapture(upstreamRes, res) {
   }
 
   try {
-    await pipeline(Readable.fromWeb(upstreamRes.body), capture, res);
+    await pipeline(Readable.fromWeb(body), res);
   } catch (err) {
     streamError = err?.message || 'SSE pipe error';
     // A client that disconnects mid-stream is normal, not a server fault
@@ -184,6 +195,23 @@ let ollamaService = null;
 let initPromise = null;
 let retentionTimer = null;
 let budgetTimer = null;
+let budgetEvalPending = false;
+let budgetEvalTimer = null;
+
+function scheduleBudgetEvaluation() {
+  if (!db || budgetEvalTimer) return;
+  budgetEvalTimer = setTimeout(() => {
+    budgetEvalTimer = null;
+    if (budgetEvalPending || !db || db.raw?.open === false || db.raw?.isOpen === false) return;
+    budgetEvalPending = true;
+    evaluateBudgets(db)
+      .catch((err) => logger.error('[BUDGETS] Evaluation failed', { error: err.message }))
+      .finally(() => {
+        budgetEvalPending = false;
+      });
+  }, 1000);
+  budgetEvalTimer.unref?.();
+}
 
 /**
  * Admin guard for mutating/sensitive endpoints. Every route that creates,
@@ -265,8 +293,15 @@ app.get(['/v1/models', '/api/v1/models'], async (req, res) => {
  * Dynamic Active-Model Resolver:
  * Accepts OpenAI-compatible completions for 'active-model', dynamically looks up
  * current active model from SQLite, and forwards to local Ollama.
+ *
+ * `egress` optionally adapts the response for a non-OpenAI ingress (the native
+ * Anthropic /v1/messages endpoint). It provides:
+ *   - callType: telemetry call type
+ *   - formatResponse(data): OpenAI JSON -> client JSON
+ *   - createStreamTransform(): OpenAI SSE -> client SSE TransformStream
+ *   - formatError(status, payload): OpenAI error -> client error payload
  */
-app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) => {
+async function handleChatCompletions(req, res, egress = null) {
   const reqStart = performance.now();
   const requestId = typeof req.headers['x-request-id'] === 'string' && req.headers['x-request-id'].trim()
     ? req.headers['x-request-id'].trim().slice(0, 128)
@@ -277,19 +312,27 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
   let appRow = null;
   let failureInfo = null;
 
+  const sendError = (status, payload) => {
+    if (egress) return res.status(status).json(egress.formatError(status, payload));
+    return res.status(status).json(payload);
+  };
+
   const persistEvent = (fields) => {
     if (!isDirectClient || !repo) return;
     try {
-      repo.saveEvent({
+      const savedEvent = repo.saveEvent({
         traceId: requestId,
         applicationId: appId,
-        callType: 'chat.completion',
+        callType: egress?.callType || 'chat.completion',
         tokensEstimated: 0,
         clientModel: typeof req.body?.model === 'string' ? req.body.model : 'active-model',
         httpStatus: fields.status === 'failure' ? null : 200,
         timestamp: new Date().toISOString(),
         ...fields
       });
+      if (savedEvent?.inserted) {
+        scheduleBudgetEvaluation();
+      }
     } catch (e) {
       logger.error('Error persisting direct event', { requestId, message: e.message });
     }
@@ -349,15 +392,16 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
           }
         }
         if (!appRow) {
-          return res.status(401).json({ error: { message: 'Unauthorized: unknown API key' } });
+          return sendError(401, { error: { message: 'Unauthorized: unknown API key' } });
         }
         appId = appRow.id;
         isDirectClient = true;
       }
     }
+    res.setHeader('X-SLIR-Telemetry', isDirectClient ? 'recorded' : 'skipped');
 
     if (req.body.model !== undefined && req.body.model !== null && typeof req.body.model !== 'string') {
-      return res.status(400).json({ error: { message: 'Invalid request: "model" must be a string' } });
+      return sendError(400, { error: { message: 'Invalid request: "model" must be a string' } });
     }
 
     const activeModel = (ollamaService && db) ? ollamaService.getActiveModel(db) : 'qwen2.5:3b';
@@ -385,7 +429,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
         errorMessage: message,
         httpStatus: 429
       });
-      return res.status(429).json({
+      return sendError(429, {
         error: {
           message,
           type: 'budget_exceeded',
@@ -494,7 +538,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
           failoverActive
         )
       });
-      return res.status(status).json({
+      return sendError(status, {
         error: {
           message: `Failed to route to model ${failureInfo?.model || primaryEventModel}: ${message}`,
           code: status,
@@ -513,8 +557,9 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
     );
 
     if (success.mode === 'stream') {
+      const clientTransform = egress ? egress.createStreamTransform() : null;
+      const captureResult = await pipeSseAndCapture(success.upstreamRes, res, clientTransform);
       const latencyMs = Math.round((performance.now() - reqStart) * 10) / 10;
-      const captureResult = await pipeSseAndCapture(success.upstreamRes, res);
       const finalChunk = extractSseUsage(captureResult.text) || {};
       const usage = finalChunk.usage || {};
       const cached = usage.prompt_tokens_details?.cached_tokens;
@@ -570,7 +615,7 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       cacheStatus: success.log?.cacheStatus || 'unknown',
       ...failover
     });
-    return res.status(200).json(data);
+    return res.status(200).json(egress ? egress.formatResponse(data) : data);
   } catch (err) {
     logger.error('Dynamic routing error', { requestId, message: err.message, stack: err.stack });
     if (failureInfo) {
@@ -580,8 +625,48 @@ app.post(['/v1/chat/completions', '/api/v1/chat/completions'], async (req, res) 
       if (!res.writableEnded) res.end();
       return;
     }
-    res.status(500).json({ error: { message: 'Internal routing error', requestId } });
+    return sendError(500, { error: { message: 'Internal routing error', requestId } });
   }
+}
+
+/**
+ * OpenAI-compatible ingress (standard Chat Completions).
+ */
+app.post(['/v1/chat/completions', '/api/v1/chat/completions'], (req, res) => (
+  handleChatCompletions(req, res)
+));
+
+/**
+ * Native Anthropic Messages API ingress. Accepts requests from the official
+ * Anthropic SDKs, converts them to the internal OpenAI shape, runs the same
+ * routing/failover/budget pipeline, then converts the response (JSON or SSE)
+ * back to the Anthropic format.
+ */
+app.post(['/v1/messages', '/api/v1/messages'], (req, res) => {
+  if (!req.headers.authorization
+    && typeof req.headers['x-api-key'] === 'string'
+    && req.headers['x-api-key'].trim()) {
+    req.headers.authorization = `Bearer ${req.headers['x-api-key'].trim()}`;
+  }
+
+  const clientModel = typeof req.body?.model === 'string' && req.body.model
+    ? req.body.model
+    : 'active-model';
+
+  let openaiBody;
+  try {
+    openaiBody = anthropicToOpenAI(req.body);
+  } catch (err) {
+    return res.status(400).json(formatAnthropicError(400, { error: { message: err.message } }));
+  }
+
+  req.body = openaiBody;
+  return handleChatCompletions(req, res, {
+    callType: 'anthropic.messages',
+    formatResponse: (data) => openAIToAnthropicResponse(data, { model: clientModel }),
+    createStreamTransform: () => createOpenAIToAnthropicStream({ model: clientModel }),
+    formatError: formatAnthropicError
+  });
 });
 
 /**
@@ -774,6 +859,7 @@ if (isMain) {
     logger.info(`[SERVER] ${signal} received, shutting down...`);
     if (retentionTimer) clearInterval(retentionTimer);
     if (budgetTimer) clearInterval(budgetTimer);
+    if (budgetEvalTimer) clearTimeout(budgetEvalTimer);
     const done = () => {
       try { if (db) db.close(); } catch { /* already closed */ }
       process.exit(0);

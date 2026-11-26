@@ -7,6 +7,8 @@ import {
   updatePricingRule
 } from '../api/client';
 import { CloseIcon, AlertTriangleIcon, PlusIcon, TrashIcon } from './icons/Icons';
+import { InfoTip } from './InfoTip';
+import { ConfirmModal } from './ConfirmModal';
 
 interface PricingModalProps {
   isOpen: boolean;
@@ -43,6 +45,8 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, pro
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [ruleToDelete, setRuleToDelete] = useState<PricingRule | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -127,15 +131,19 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, pro
     }
   };
 
-  const handleDelete = async (rule: PricingRule) => {
-    if (!window.confirm(`Delete pricing for ${rule.provider}/${rule.model_pattern}? Existing events keep their recorded cost.`)) return;
+  const confirmDeleteRule = async () => {
+    if (!ruleToDelete) return;
     try {
-      await deletePricingRule(rule.id);
-      if (form.id === rule.id) setForm(emptyForm());
+      setDeleting(true);
+      await deletePricingRule(ruleToDelete.id);
+      if (form.id === ruleToDelete.id) setForm(emptyForm());
       setNotice('Pricing rule deleted.');
+      setRuleToDelete(null);
       await load();
     } catch (err: any) {
       setError(err.message || 'Failed to delete pricing rule.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -182,7 +190,14 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, pro
                 </datalist>
               </label>
               <label className="mp-form-field">
-                <span>Model pattern</span>
+                <span className="mp-label-with-tip">
+                  <span>Model pattern</span>
+                  <InfoTip
+                    title="Model Pattern Matching"
+                    text="Exact model ID or prefix wildcard matched when calculating costs. Only affects future requests—existing logs keep their original recorded cost."
+                    example="e.g. gpt-4o* matches gpt-4o and gpt-4o-mini"
+                  />
+                </span>
                 <input
                   className="mp-input"
                   value={form.model_pattern}
@@ -279,7 +294,7 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, pro
                           <td>
                             <div className="mp-row-actions">
                               <button type="button" className="mp-btn mp-btn-ghost" onClick={() => handleEdit(rule)}>Edit</button>
-                              <button type="button" className="mp-icon-btn danger" onClick={() => handleDelete(rule)} aria-label="Delete rule">
+                              <button type="button" className="mp-icon-btn danger" onClick={() => setRuleToDelete(rule)} aria-label="Delete rule">
                                 <TrashIcon size={12} />
                               </button>
                             </div>
@@ -300,6 +315,18 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, pro
           </div>
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={Boolean(ruleToDelete)}
+        title="Delete pricing rule"
+        message={`Delete pricing for ${ruleToDelete?.provider}/${ruleToDelete?.model_pattern}?`}
+        subMessage="Existing historical events keep their already-recorded cost."
+        confirmLabel="Delete rule"
+        isDanger={true}
+        loading={deleting}
+        onConfirm={confirmDeleteRule}
+        onClose={() => setRuleToDelete(null)}
+      />
     </div>
   );
 };

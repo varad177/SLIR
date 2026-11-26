@@ -14,7 +14,7 @@ export function invalidatePricingCache(db) {
   pricingCache.delete(db);
 }
 
-function loadPricingRules(db) {
+function loadPricingCatalog(db) {
   const cached = pricingCache.get(db);
   if (cached) return cached;
 
@@ -22,8 +22,21 @@ function loadPricingRules(db) {
     SELECT * FROM model_pricing
     ORDER BY (model_pattern LIKE '%*%') ASC, id DESC
   `).all();
-  pricingCache.set(db, rules);
-  return rules;
+
+  let customRates = [];
+  try {
+    customRates = db.prepare(`
+      SELECT model_id, provider, input_cost_per_million, output_cost_per_million
+      FROM custom_models
+      WHERE input_cost_per_million IS NOT NULL OR output_cost_per_million IS NOT NULL
+    `).all();
+  } catch {
+    customRates = [];
+  }
+
+  const catalog = { rules, customRates };
+  pricingCache.set(db, catalog);
+  return catalog;
 }
 
 /**
@@ -85,7 +98,8 @@ export function calculateEventCost(db, event) {
   const eventTime = event.timestamp || new Date().toISOString();
   const eventModel = (event.model || '').toLowerCase();
   const eventProvider = (event.provider || '').toLowerCase();
-  const pricingRules = loadPricingRules(db).filter(rule =>
+  const catalog = loadPricingCatalog(db);
+  const pricingRules = catalog.rules.filter(rule =>
     rule.effective_from <= eventTime &&
     (!rule.effective_to || rule.effective_to > eventTime)
   );
@@ -109,6 +123,22 @@ export function calculateEventCost(db, event) {
       bestScore = score;
       matchedRule = rule;
       if (score === 4) break;
+    }
+  }
+
+  // Fallback to per-1M rates configured directly on custom_models when no
+  // explicit model_pricing rule matched.
+  if (!matchedRule && catalog.customRates.length > 0) {
+    const normalizedModel = eventModel.replace(/^ollama\//, '');
+    const customMatch = catalog.customRates.find((cm) => {
+      const id = String(cm.model_id || '').trim().toLowerCase();
+      return id === eventModel || id === normalizedModel;
+    });
+    if (customMatch) {
+      matchedRule = {
+        input_cost_per_million: Number(customMatch.input_cost_per_million) || 0,
+        output_cost_per_million: Number(customMatch.output_cost_per_million) || 0
+      };
     }
   }
 

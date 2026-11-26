@@ -1,8 +1,18 @@
 const buckets = new Map();
+const MAX_BUCKETS = 1000;
+
+function pruneExpiredBuckets(now) {
+  for (const [key, bucket] of buckets.entries()) {
+    if (bucket.resetAt <= now) buckets.delete(key);
+  }
+}
 
 export function createRateLimiter({ windowMs = 60_000, max = 30, keyPrefix = 'default' } = {}) {
   return function rateLimiter(req, res, next) {
     const now = Date.now();
+    if (buckets.size > MAX_BUCKETS) {
+      pruneExpiredBuckets(now);
+    }
     const key = `${keyPrefix}:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
     const existing = buckets.get(key);
     const bucket = existing && existing.resetAt > now

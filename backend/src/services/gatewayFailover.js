@@ -4,11 +4,19 @@ import {
   getOllamaUrls,
   normalizeModelId
 } from './ollamaEndpoints.js';
+import { getAdapter, joinEndpoint } from '../adapters/index.js';
 
 const CIRCUIT_FAILURE_THRESHOLD = Number(process.env.FAILOVER_CIRCUIT_FAILURES) || 5;
 const CIRCUIT_COOLDOWN_MS = Number(process.env.FAILOVER_CIRCUIT_COOLDOWN_MS) || 30000;
 const CIRCUIT_BREAKER_ENABLED = process.env.FAILOVER_CIRCUIT_BREAKER !== 'false';
 const circuitState = new Map();
+let lastHealthyOllama = { url: null, at: 0 };
+const OLLAMA_HOST_CACHE_TTL_MS = 15000;
+
+export function clearCircuitBreakers() {
+  circuitState.clear();
+  lastHealthyOllama = { url: null, at: 0 };
+}
 
 function circuitKey(target) {
   return `${target.kind}:${target.model}`;
@@ -36,10 +44,6 @@ function recordCircuitFailure(target, reason) {
   });
 }
 
-export function clearCircuitBreakers() {
-  circuitState.clear();
-}
-
 function finiteOrNull(value) {
   return Number.isFinite(value) ? value : null;
 }
@@ -51,15 +55,23 @@ function classifyStatus(status) {
   return { reason: 'upstream_error', retryable: false };
 }
 
-function classifyThrown(err, context) {
-  const text = `${err?.name || ''} ${err?.message || ''}`;
+function classifyThrown(err, context, durationMs = 0) {
+  const causeMsg = err?.cause?.code && err?.cause?.message
+    ? `${err.cause.code}: ${err.cause.message}`
+    : (err?.cause?.message || err?.cause?.code || '');
+  const baseMessage = err?.message || String(err);
+  const message = causeMsg && !baseMessage.includes(causeMsg)
+    ? `${baseMessage} (${causeMsg})`
+    : baseMessage;
+  const text = `${err?.name || ''} ${message}`;
   const isTimeout = /timeout|abort/i.test(text);
   return {
     ok: false,
     retryable: true,
     reason: isTimeout ? 'timeout' : 'network_error',
     status: isTimeout ? 504 : 502,
-    message: err?.message || String(err),
+    message,
+    durationMs,
     ...context
   };
 }
@@ -85,11 +97,6 @@ function logFromUsage(data, cacheStatus) {
     totalTokens: finiteOrNull(usage.total_tokens),
     cacheStatus
   };
-}
-
-function cloudCacheStatus(data) {
-  const cached = data?.usage?.prompt_tokens_details?.cached_tokens;
-  return typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown';
 }
 
 function parseFallbackModels(value) {
@@ -154,23 +161,15 @@ export function eventModelForTarget(target) {
 async function executeCloudAttempt(target, reqBody, options) {
   const startedAt = performance.now();
   const customModel = target.customModel;
+  const adapter = getAdapter(customModel.format);
   const context = {
     provider: target.provider,
     model: target.model
   };
-  const cloudEndpoint = `${customModel.api_base}/chat/completions`;
-  const cloudHeaders = { 'Content-Type': 'application/json' };
-  if (customModel.api_key) {
-    cloudHeaders.Authorization = `Bearer ${customModel.api_key}`;
-  }
+  const cloudEndpoint = joinEndpoint(customModel.api_base, adapter.getEndpointPath(customModel));
+  const cloudHeaders = adapter.buildHeaders(customModel.api_key, customModel);
 
-  let cloudPayload = {
-    ...reqBody,
-    model: customModel.model_id
-  };
-  if (cloudPayload.stream && !cloudPayload.stream_options) {
-    cloudPayload.stream_options = { include_usage: true };
-  }
+  let cloudPayload = adapter.buildRequestBody(reqBody, customModel);
 
   const timeoutMs = Number(customModel.timeout_ms) > 0
     ? Number(customModel.timeout_ms)
@@ -185,7 +184,7 @@ async function executeCloudAttempt(target, reqBody, options) {
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (err) {
-    return classifyThrown(err, context);
+    return classifyThrown(err, context, performance.now() - startedAt);
   }
 
   if (!cloudRes.ok && cloudRes.status === 400 && cloudPayload.response_format?.type === 'json_schema') {
@@ -208,7 +207,7 @@ async function executeCloudAttempt(target, reqBody, options) {
         signal: AbortSignal.timeout(timeoutMs)
       });
     } catch (err) {
-      return classifyThrown(err, context);
+      return classifyThrown(err, context, performance.now() - startedAt);
     }
   }
 
@@ -232,10 +231,10 @@ async function executeCloudAttempt(target, reqBody, options) {
           signal: AbortSignal.timeout(timeoutMs)
         });
       } catch (err) {
-        return classifyThrown(err, context);
+        return classifyThrown(err, context, performance.now() - startedAt);
       }
     } else {
-      return failureFromResponse(cloudRes, errorText, context, performance.now() - startedAt);
+      return failureFromResponse(cloudRes, adapter.formatErrorMessage(errorText), context, performance.now() - startedAt);
     }
   }
 
@@ -246,17 +245,29 @@ async function executeCloudAttempt(target, reqBody, options) {
     } catch {
       errorText = '';
     }
-    return failureFromResponse(cloudRes, errorText, context, performance.now() - startedAt);
+    return failureFromResponse(
+      cloudRes,
+      adapter.formatErrorMessage(errorText),
+      context,
+      performance.now() - startedAt
+    );
   }
 
   const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
   if (reqBody.stream && cloudRes.body) {
+    const streamTransform = adapter.createStreamTransform(customModel, reqBody);
+    const upstreamRes = streamTransform
+      ? new Response(cloudRes.body.pipeThrough(streamTransform), {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' }
+        })
+      : cloudRes;
     return {
       ok: true,
       mode: 'stream',
       provider: target.provider,
       model: target.model,
-      upstreamRes: cloudRes,
+      upstreamRes,
       durationMs,
       eventModel: target.model
     };
@@ -278,15 +289,72 @@ async function executeCloudAttempt(target, reqBody, options) {
     };
   }
 
+  const transformed = adapter.transformResponse(data, customModel, reqBody);
+
   return {
     ok: true,
     mode: 'json',
     provider: target.provider,
     model: target.model,
     eventModel: target.model,
-    responseBody: data,
-    log: logFromUsage(data, cloudCacheStatus(data)),
+    responseBody: transformed,
+    log: {
+      ...adapter.extractUsage(transformed),
+      cacheStatus: adapter.cacheStatus(transformed)
+    },
     durationMs
+  };
+}
+
+function orderedOllamaUrls() {
+  const urls = getOllamaUrls();
+  if (lastHealthyOllama.url && Date.now() - lastHealthyOllama.at < OLLAMA_HOST_CACHE_TTL_MS && urls.includes(lastHealthyOllama.url)) {
+    return [lastHealthyOllama.url, ...urls.filter((u) => u !== lastHealthyOllama.url)];
+  }
+  return urls;
+}
+
+function shouldUseNativeOllamaChat(reqBody) {
+  if (reqBody.stream) return false;
+  if (reqBody.tools || reqBody.tool_choice || reqBody.functions || reqBody.function_call) return false;
+  const messages = Array.isArray(reqBody.messages) ? reqBody.messages : [];
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') return false;
+    if (msg.role === 'developer' || msg.role === 'tool' || msg.role === 'function') return false;
+    if (Array.isArray(msg.content) || Array.isArray(msg.tool_calls)) return false;
+    if (msg.content === null || msg.content === undefined) return false;
+  }
+  return true;
+}
+
+function mapOllamaFormat(responseFormat) {
+  if (!responseFormat || typeof responseFormat !== 'object') return undefined;
+  if (responseFormat.type === 'json_object') return 'json';
+  if (responseFormat.type === 'json_schema' && responseFormat.json_schema?.schema) {
+    return responseFormat.json_schema.schema;
+  }
+  return undefined;
+}
+
+function normalizeOllamaMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return { role: 'assistant', content: '' };
+  }
+  if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
+    return message;
+  }
+  return {
+    ...message,
+    tool_calls: message.tool_calls.map((call, idx) => ({
+      id: call.id || `call_${idx}`,
+      type: call.type || 'function',
+      function: {
+        name: call.function?.name || '',
+        arguments: typeof call.function?.arguments === 'string'
+          ? call.function.arguments
+          : JSON.stringify(call.function?.arguments ?? {})
+      }
+    }))
   };
 }
 
@@ -302,7 +370,7 @@ function buildNativeResponse(target, data) {
     choices: [
       {
         index: 0,
-        message: data.message || { role: 'assistant', content: '' },
+        message: normalizeOllamaMessage(data.message),
         finish_reason: data.done_reason || 'stop'
       }
     ],
@@ -335,15 +403,29 @@ function buildNativeResponse(target, data) {
 
 async function executeLocalAttempt(target, reqBody, options) {
   const startedAt = performance.now();
-  const ollamaUrls = getOllamaUrls();
+  const ollamaUrls = orderedOllamaUrls();
   const context = {
     provider: 'ollama',
     model: `ollama/${target.model}`
   };
   let lastFailure = null;
+  const deadUrls = new Set();
 
   const devConfig = options.devConfig || { temperature: 0.7, num_ctx: 4096 };
-  if (!reqBody.stream) {
+  if (shouldUseNativeOllamaChat(reqBody)) {
+    const ollamaOptions = {
+      temperature: reqBody.temperature !== undefined ? Number(reqBody.temperature) : devConfig.temperature,
+      num_ctx: reqBody.num_ctx !== undefined ? Number(reqBody.num_ctx) : devConfig.num_ctx
+    };
+    const maxTokens = Number(reqBody.max_tokens);
+    if (Number.isFinite(maxTokens) && maxTokens > 0) ollamaOptions.num_predict = maxTokens;
+    if (reqBody.top_p !== undefined && Number.isFinite(Number(reqBody.top_p))) ollamaOptions.top_p = Number(reqBody.top_p);
+    if (reqBody.stop !== undefined && reqBody.stop !== null) {
+      ollamaOptions.stop = Array.isArray(reqBody.stop) ? reqBody.stop : [reqBody.stop];
+    }
+    if (reqBody.seed !== undefined && Number.isFinite(Number(reqBody.seed))) ollamaOptions.seed = Number(reqBody.seed);
+    const format = mapOllamaFormat(reqBody.response_format);
+
     for (const url of ollamaUrls) {
       try {
         const chatRes = await fetch(`${url}/api/chat`, {
@@ -353,15 +435,14 @@ async function executeLocalAttempt(target, reqBody, options) {
             model: target.model,
             messages: reqBody.messages || [],
             stream: false,
-            options: {
-              temperature: reqBody.temperature !== undefined ? Number(reqBody.temperature) : devConfig.temperature,
-              num_ctx: reqBody.num_ctx !== undefined ? Number(reqBody.num_ctx) : devConfig.num_ctx
-            }
+            ...(format !== undefined ? { format } : {}),
+            options: ollamaOptions
           }),
           signal: AbortSignal.timeout(LOCAL_TIMEOUT_MS)
         });
 
         if (chatRes.ok) {
+          lastHealthyOllama = { url, at: Date.now() };
           const data = await chatRes.json();
           const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
           const nsToMs = (value) => (Number.isFinite(value) && value > 0 ? Math.round((value / 1e6) * 10) / 10 : null);
@@ -403,17 +484,24 @@ async function executeLocalAttempt(target, reqBody, options) {
           lastFailure.message = lastFailure.message || `ollama /api/chat returned ${chatRes.status}`;
         }
       } catch (err) {
-        lastFailure = classifyThrown(err, context);
+        deadUrls.add(url);
+        if (lastHealthyOllama.url === url) lastHealthyOllama = { url: null, at: 0 };
+        lastFailure = classifyThrown(err, context, performance.now() - startedAt);
       }
     }
   }
 
+  const { _anthropic_native: _nativeEnvelope, ...localBody } = reqBody;
   const payload = {
-    ...reqBody,
+    ...localBody,
     model: target.model
   };
+  if (payload.stream && !payload.stream_options) {
+    payload.stream_options = { include_usage: true };
+  }
 
   for (const url of ollamaUrls) {
+    if (deadUrls.has(url)) continue;
     let upstreamRes;
     try {
       upstreamRes = await fetch(`${url}/v1/chat/completions`, {
@@ -423,7 +511,8 @@ async function executeLocalAttempt(target, reqBody, options) {
         signal: AbortSignal.timeout(LOCAL_TIMEOUT_MS)
       });
     } catch (err) {
-      lastFailure = classifyThrown(err, context);
+      if (lastHealthyOllama.url === url) lastHealthyOllama = { url: null, at: 0 };
+      lastFailure = classifyThrown(err, context, performance.now() - startedAt);
       continue;
     }
 
@@ -437,6 +526,8 @@ async function executeLocalAttempt(target, reqBody, options) {
       lastFailure = failureFromResponse(upstreamRes, body, context, performance.now() - startedAt);
       continue;
     }
+
+    lastHealthyOllama = { url, at: Date.now() };
 
     const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
     if (reqBody.stream && upstreamRes.body) {

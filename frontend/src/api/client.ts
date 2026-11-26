@@ -14,6 +14,7 @@ import {
   ProfileBenchmarkResult,
   ModelHealthResponse,
   ModelTestResult,
+  ModelFormat,
   BudgetItem,
   BudgetPayload,
   AlertsResponse,
@@ -33,6 +34,7 @@ function buildQuery(filters: Partial<ActiveFilters>): string {
   if (filters.appId && filters.appId !== 'all') params.set('appId', filters.appId);
   if (filters.streaming && filters.streaming !== 'all') params.set('streaming', filters.streaming);
   if (filters.cacheStatus && filters.cacheStatus !== 'all') params.set('cacheStatus', filters.cacheStatus);
+  if (filters.failover && filters.failover !== 'all') params.set('failover', filters.failover);
   if (filters.start) params.set('start', filters.start);
   if (filters.end) params.set('end', filters.end);
   if (filters.search && filters.search.trim()) params.set('search', filters.search.trim());
@@ -129,7 +131,13 @@ export async function fetchModelBenchmark(): Promise<BenchmarkLeaderboardRespons
 export async function runTestPromptBenchmark(
   model: string,
   prompt?: string,
-  options?: { temperature?: number; maxTokens?: number; stream?: boolean }
+  options?: {
+    messages?: Array<{ role: string; content: string }>;
+    applicationId?: string | null;
+    temperature?: number;
+    maxTokens?: number;
+    stream?: boolean;
+  }
 ): Promise<TestPromptResult> {
   const res = await fetch(`${MODELS_BASE_URL}/test-prompt`, {
     method: 'POST',
@@ -137,6 +145,8 @@ export async function runTestPromptBenchmark(
     body: JSON.stringify({
       model,
       prompt,
+      ...(options?.messages ? { messages: options.messages } : {}),
+      ...(options?.applicationId ? { applicationId: options.applicationId } : {}),
       ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
       ...(options?.stream !== undefined ? { stream: options.stream } : {})
@@ -147,6 +157,81 @@ export async function runTestPromptBenchmark(
     throw new Error(errorData.error || `Failed to run benchmark prompt: ${res.statusText}`);
   }
   return res.json();
+}
+
+export async function streamTestPromptBenchmark(
+  model: string,
+  options: {
+    prompt?: string;
+    messages?: Array<{ role: string; content: string }>;
+    applicationId?: string | null;
+    temperature?: number;
+    maxTokens?: number;
+    onDelta?: (delta: string) => void;
+  }
+): Promise<TestPromptResult> {
+  const res = await fetch(`${MODELS_BASE_URL}/test-prompt/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      prompt: options.prompt,
+      ...(options.messages ? { messages: options.messages } : {}),
+      ...(options.applicationId ? { applicationId: options.applicationId } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {})
+    })
+  });
+
+  if (!res.ok || !res.body) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || `Failed to stream benchmark prompt: ${res.statusText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult: TestPromptResult | null = null;
+  let accumulated = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let match: RegExpExecArray | null;
+    while ((match = /\r?\n\r?\n/.exec(buffer)) !== null) {
+      const frame = buffer.slice(0, match.index);
+      buffer = buffer.slice(match.index + match[0].length);
+      const dataLine = frame.split(/\r?\n/).find((l) => l.startsWith('data:'));
+      if (!dataLine) continue;
+      const raw = dataLine.slice(5).trim();
+      if (!raw) continue;
+      let event: any;
+      try {
+        event = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (event.type === 'delta' && event.content) {
+        accumulated += event.content;
+        options.onDelta?.(event.content);
+      } else if (event.type === 'error') {
+        throw new Error(event.error || 'Streaming inference failed');
+      } else if (event.type === 'done' && event.result) {
+        finalResult = event.result;
+      }
+    }
+  }
+
+  if (finalResult) return finalResult;
+  return {
+    success: true,
+    model,
+    latencyMs: 0,
+    content: accumulated,
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    tokensPerSec: 0
+  };
 }
 
 export async function addCustomCloudModel(payload: CustomCloudModel): Promise<any> {
@@ -180,6 +265,7 @@ export async function testModelConnection(payload: {
   apiKey?: string;
   modelId: string;
   timeoutMs?: number;
+  format?: ModelFormat;
 }): Promise<ModelTestResult> {
   const res = await fetch(`${MODELS_BASE_URL}/custom/test`, {
     method: 'POST',
@@ -190,7 +276,7 @@ export async function testModelConnection(payload: {
   return res.json();
 }
 
-export async function testStoredModel(modelId: string, payload: { apiBase?: string; apiKey?: string; modelId?: string; timeoutMs?: number } = {}): Promise<ModelTestResult> {
+export async function testStoredModel(modelId: string, payload: { apiBase?: string; apiKey?: string; modelId?: string; timeoutMs?: number; format?: ModelFormat } = {}): Promise<ModelTestResult> {
   const res = await fetch(`${MODELS_BASE_URL}/custom/${encodeURIComponent(modelId)}/test`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

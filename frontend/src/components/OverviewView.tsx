@@ -25,7 +25,9 @@ import {
   SlidersIcon,
   CloseIcon
 } from './icons/Icons';
+import { InfoTip } from './InfoTip';
 import { copyText } from '../utils/clipboard';
+import { failoverReasonLabel, hasFailoverActivity } from '../utils/failover';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   ResponsiveContainer,
@@ -56,6 +58,7 @@ interface OverviewViewProps {
   onSelectAppId?: (appId: string | null) => void;
   activeTimeframe: '15m' | '1h' | '6h' | '24h' | '7d' | 'all';
   onTimeframeChange: (tf: '15m' | '1h' | '6h' | '24h' | '7d' | 'all') => void;
+  onInspectRequest?: (requestId: string) => void;
 }
 
 const formatTimestampParts = (iso?: string) => {
@@ -98,6 +101,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onSelectAppId,
   activeTimeframe,
   onTimeframeChange,
+  onInspectRequest,
   gatewayPort = 4101
 }) => {
   const [copiedUrl, setCopiedUrl] = useState(false);
@@ -374,10 +378,20 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </div>
 
           <div className="mp-routing-summary">
-            <span className={`mp-rule-chip ${isPinned ? 'pinned' : 'global'}`}>
-              <span className="mp-rule-dot" />
-              {isPinned ? 'Pinned model' : 'Follows global fallback'}
-            </span>
+            <InfoTip
+              title={isPinned ? 'Pinned model' : 'Follows global fallback'}
+              text={
+                isPinned
+                  ? 'This application is locked ("pinned") to a dedicated model. When it sends model: "active-model", SLIR routes here even if the Global Fallback changes.'
+                  : 'This application follows the shared Global Fallback. When it sends model: "active-model", SLIR routes to whichever model is set globally on the Models tab.'
+              }
+              example={isPinned ? 'Click "Follow global" to unpin' : 'Select a specific model below to pin this app'}
+            >
+              <span className={`mp-rule-chip ${isPinned ? 'pinned' : 'global'}`}>
+                <span className="mp-rule-dot" />
+                {isPinned ? 'Pinned model' : 'Follows global fallback'}
+              </span>
+            </InfoTip>
             <span className="mp-routing-target font-mono" title={effectiveModel}>{effectiveModel}</span>
             <span className="mp-routing-provider">{isCloudActive ? activeCustom?.provider : 'Ollama'}</span>
           </div>
@@ -400,7 +414,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           )}
 
           <label className="mp-field mp-field-grow">
-            <span className="mp-field-label">Route this application to</span>
+            <span className="mp-field-label mp-label-with-tip">
+              <span>Route this application to</span>
+              <InfoTip
+                title="Application Routing Mode"
+                text="'Follow global fallback' shares one global model across unpinned apps. Picking any specific model pins this app so its default route never changes when you switch the global model."
+              />
+            </span>
             <select
               className="mp-select font-mono"
               value={modelDraft}
@@ -430,14 +450,18 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </select>
           </label>
 
-          <button
-            className="mp-btn mp-btn-secondary mp-nowrap"
-            onClick={() => handleRoutingModelChange('active-model')}
-            disabled={switching || !isPinned || !routingAppId}
-            title="Remove the pin and follow the global active model"
+          <InfoTip
+            title="Follow global"
+            text="Removes this app's model pin so it automatically uses the shared Global Fallback model again."
           >
-            Follow global
-          </button>
+            <button
+              className="mp-btn mp-btn-secondary mp-nowrap"
+              onClick={() => handleRoutingModelChange('active-model')}
+              disabled={switching || !isPinned || !routingAppId}
+            >
+              Follow global
+            </button>
+          </InfoTip>
         </div>
 
         <div className="mp-routing-footer">
@@ -480,7 +504,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       <section className="mp-tuning-strip">
         <span className="mp-tuning-label">Runtime defaults</span>
         <label className="mp-inline-field">
-          <span>Context</span>
+          <span className="mp-label-with-tip">
+            <span>Context</span>
+            <InfoTip
+              title="Context window (num_ctx)"
+              text="Max tokens (prompt + reply combined) a local Ollama model keeps in memory at once. Larger context uses more GPU VRAM."
+            />
+          </span>
           <select className="mp-select mp-select-compact font-mono" value={devConfig.num_ctx} onChange={(e) => handleChangeContext(Number(e.target.value))}>
             <option value={2048}>2K</option>
             <option value={4096}>4K</option>
@@ -489,7 +519,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </select>
         </label>
         <label className="mp-inline-field">
-          <span>Temperature</span>
+          <span className="mp-label-with-tip">
+            <span>Temperature</span>
+            <InfoTip
+              title="Sampling temperature"
+              text="Controls output randomness. 0.0 produces deterministic, repeatable answers; higher values (0.7–1.0) give more varied and creative replies."
+            />
+          </span>
           <select className="mp-select mp-select-compact font-mono" value={devConfig.temperature} onChange={(e) => handleChangeTemperature(Number(e.target.value))}>
             <option value={0}>0.0 strict</option>
             <option value={0.2}>0.2 focused</option>
@@ -523,22 +559,46 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
           <div className="mp-profile-grid">
             <div className="mp-profile-metric">
-              <span>Load</span>
+              <span className="mp-label-with-tip">
+                <span>Load</span>
+                <InfoTip
+                  title="Model Load Duration"
+                  text="Time to load model weights into GPU/RAM. Over ~800ms means 'Cold weights' (first load); near 0ms means 'Warm in memory'."
+                />
+              </span>
               <strong>{profileResult.loadMs !== null ? formatLatency(profileResult.loadMs) : 'Not reported'}</strong>
               <small>{profileResult.loadMs === null ? 'Cloud endpoint' : profileResult.loadMs > 800 ? 'Cold weights' : 'Warm in memory'}</small>
             </div>
             <div className="mp-profile-metric">
-              <span>Prompt eval</span>
+              <span className="mp-label-with-tip">
+                <span>Prompt eval</span>
+                <InfoTip
+                  title="Prompt Evaluation (TTFT)"
+                  text="Time spent reading and processing your input prompt before the model begins generating its first output token."
+                />
+              </span>
               <strong>{profileResult.promptEvalMs !== null ? formatLatency(profileResult.promptEvalMs) : 'Not reported'}</strong>
               <small>{profileResult.promptTokens} prompt tokens</small>
             </div>
             <div className="mp-profile-metric">
-              <span>Generation</span>
+              <span className="mp-label-with-tip">
+                <span>Generation</span>
+                <InfoTip
+                  title="Token Generation Time"
+                  text="Time spent producing the reply tokens, plus output speed measured in tokens per second (tok/s)."
+                />
+              </span>
               <strong>{profileResult.evalMs !== null ? formatLatency(profileResult.evalMs) : 'Not reported'}</strong>
               <small>{profileResult.tokensPerSec} tok/s · {profileResult.completionTokens} tokens</small>
             </div>
             <div className="mp-profile-metric highlight">
-              <span>End to end</span>
+              <span className="mp-label-with-tip">
+                <span>End to end</span>
+                <InfoTip
+                  title="Total Latency"
+                  text="Complete wall-clock time from sending the request until the full response finishes."
+                />
+              </span>
               <strong>{formatLatency(profileResult.latencyMs)}</strong>
               <small>{profileResult.totalTokens} tokens total</small>
             </div>
@@ -635,7 +695,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
         <div className="mp-kpi">
           <div className="mp-kpi-top">
-            <span>Prompt cache</span>
+            <span className="mp-label-with-tip">
+              <span>Prompt cache</span>
+              <InfoTip
+                title="Prompt KV Cache Hits"
+                text="How often the model reused cached prompt prefixes (such as a repeated system prompt) instead of re-evaluating them, reducing latency and input cost."
+              />
+            </span>
             <span className={cacheBadgeClass}>
               {cacheReported > 0 ? cacheRate + '% hit' : 'Not reported'}
             </span>
@@ -649,13 +715,19 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
         <div className="mp-kpi">
           <div className="mp-kpi-top">
-            <span>Estimated spend</span>
+            <span className="mp-label-with-tip">
+              <span>Estimated spend</span>
+              <InfoTip
+                title="Estimated Spend & Burn Rate"
+                text="Calculated from prompt/completion tokens using your Pricing Rules under Costs & Alerts. Local Ollama models count as $0 unless you assign a rate."
+              />
+            </span>
             <span className={costBadgeClass}>{totalCost > 0 ? 'Priced' : 'No cost'}</span>
           </div>
           <div className="mp-kpi-value font-mono">${totalCost.toFixed(4)}</div>
           <div className="mp-kpi-foot">
-            <span>$' + burnRate.toFixed(2) + '/day</span>
-            <span>~$' + projected30d.toFixed(2) + ' / 30d</span>
+            <span>${burnRate.toFixed(2)}/day</span>
+            <span>~${projected30d.toFixed(2)} / 30d</span>
           </div>
         </div>
       </section>
@@ -695,6 +767,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 </tr>
               ) : recentItems.map((req) => {
                 const ok = req.status === 'success';
+                const failoverActive = hasFailoverActivity(req);
                 const { time, date } = formatTimestampParts(req.timestamp);
                 return (
                   <tr key={req.id}>
@@ -708,7 +781,33 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                         <div className="mp-table-secondary font-mono">requested {req.client_model}</div>
                       )}
                     </td>
-                    <td className="font-mono">{req.model}</td>
+                    <td className="font-mono">
+                      <div>
+                        {req.model}
+                        {failoverActive && (
+                          <span className={`mp-failover-badge ${req.failover_used ? 'used' : 'failed'}`}>
+                            {req.failover_used ? 'Failover' : 'Failover failed'}
+                          </span>
+                        )}
+                      </div>
+                      {failoverActive && (
+                        <div className="mp-table-secondary font-mono">
+                          from {req.failover_from_model || 'primary'}
+                          {req.failover_reason ? ` · ${failoverReasonLabel(req.failover_reason)}` : ''}
+                          {(req.failover_attempts || 0) > 0 ? ` · ${req.failover_attempts} fallback(s)` : ''}
+                          {onInspectRequest && (
+                            <button
+                              type="button"
+                              className="mp-link-btn"
+                              style={{ marginLeft: '6px', fontSize: '0.625rem' }}
+                              onClick={() => onInspectRequest(req.request_id)}
+                            >
+                              details ↗
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
                     <td>
                       <span className={`mp-badge ${ok ? 'success' : 'danger'}`}>
                         {req.http_status || (ok ? 200 : 'error')}
@@ -811,7 +910,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                       return label;
                     }}
                   />
-                  <CartesianGrid strokeDasharray="4 4" stroke="#1e293b" vertical={false} />
+                  <CartesianGrid strokeDasharray="4 4" stroke="var(--mp-border)" vertical={false} />
                   <Legend
                     layout="horizontal"
                     align="center"

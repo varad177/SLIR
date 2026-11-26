@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ApplicationItem,
-  FailoverTraceEntry,
   InstalledModelsResponse,
   UsageEventItem
 } from '../types/analytics';
 import { fetchInstalledModels, fetchRequests, updateApplication } from '../api/client';
+import { failoverReasonLabel, parseFailoverTrace } from '../utils/failover';
 import {
   AlertTriangleIcon,
   CheckIcon,
@@ -15,37 +15,16 @@ import {
   TrashIcon,
   ZapIcon
 } from './icons/Icons';
+import { InfoTip } from './InfoTip';
+import { FailoverTraceList } from './FailoverTraceList';
 
 interface FailoverViewProps {
   applications: ApplicationItem[];
   selectedAppId?: string | null;
   onSelectAppId?: (appId: string | null) => void;
   onApplicationsChanged?: () => void;
+  onInspectLogs?: (options: { appId?: string | null; failover?: 'only' | 'all'; search?: string }) => void;
 }
-
-const REASON_LABELS: Record<string, string> = {
-  rate_limit: 'Rate limit',
-  timeout: 'Timeout',
-  network_error: 'Network error',
-  upstream_5xx: 'Provider 5xx',
-  upstream_error: 'Provider error',
-  invalid_response: 'Invalid response',
-  budget_exceeded: 'Budget blocked',
-  circuit_open: 'Circuit open',
-  success: 'Success',
-  stream_started: 'Stream started'
-};
-
-const reasonLabel = (reason?: string | null) => REASON_LABELS[reason || ''] || reason || 'Unknown';
-
-const parseTrace = (value?: string | null): FailoverTraceEntry[] => {
-  try {
-    const parsed = JSON.parse(value || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
 
 const formatTime = (iso?: string | null) => {
   if (!iso) return '—';
@@ -58,14 +37,16 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
   applications,
   selectedAppId = null,
   onSelectAppId,
-  onApplicationsChanged
+  onApplicationsChanged,
+  onInspectLogs
 }) => {
   const activeApp = applications.find((app) => app.id === selectedAppId) || applications[0] || null;
   const [modelsData, setModelsData] = useState<InstalledModelsResponse | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
-  const [recentEvents, setRecentEvents] = useState<UsageEventItem[]>([]);
+  const [recentFailoverEvents, setRecentFailoverEvents] = useState<UsageEventItem[]>([]);
+  const [failoverTotal, setFailoverTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,10 +68,7 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
     return Array.from(values).sort();
   }, [fallbackModels, modelsData]);
 
-  const failoverEvents = useMemo(
-    () => recentEvents.filter((event) => (event.failover_attempts || 0) > 0 || event.failover_used === 1),
-    [recentEvents]
-  );
+  const failoverEvents = recentFailoverEvents;
 
   const primaryLabel = activeApp?.defaultModel === 'active-model'
     ? 'Global active model'
@@ -107,12 +85,14 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
 
   const loadRecentEvents = useCallback(async () => {
     if (!activeApp) {
-      setRecentEvents([]);
+      setRecentFailoverEvents([]);
+      setFailoverTotal(0);
       return;
     }
     try {
-      const data = await fetchRequests({ appId: activeApp.id, limit: 100 });
-      setRecentEvents(data.items || []);
+      const data = await fetchRequests({ appId: activeApp.id, failover: 'only', limit: 25 });
+      setRecentFailoverEvents(data.items || []);
+      setFailoverTotal(data.pagination?.total ?? (data.items?.length || 0));
     } catch (err: any) {
       setError(err.message || 'Failed to load recent failover events.');
     }
@@ -263,11 +243,17 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
           <strong>{fallbackModels.length}</strong>
         </div>
         <div className="mp-costs-stat">
-          <span>Recent failovers</span>
-          <strong>{failoverEvents.length}</strong>
+          <span>Recorded failovers</span>
+          <strong>{failoverTotal}</strong>
         </div>
         <div className="mp-costs-stat">
-          <span>Primary route</span>
+          <span className="mp-label-with-tip">
+            <span>Primary route</span>
+            <InfoTip
+              title="Primary Route"
+              text="The first model SLIR calls for this app (either the Global Fallback or its Pinned model). Fallbacks only run if this primary model fails with 429, 5xx, timeout, or network error."
+            />
+          </span>
           <strong className="mp-failover-primary">
             {activeApp.defaultModel === 'active-model' ? 'Global active model' : activeApp.defaultModel}
           </strong>
@@ -279,7 +265,13 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
           <div className="mp-failover-card-head">
             <div>
               <div className="mp-eyebrow">Application policy</div>
-              <h2 className="mp-section-title">Failover chain</h2>
+              <h2 className="mp-section-title mp-label-with-tip">
+                <span>Failover chain</span>
+                <InfoTip
+                  title="Ordered Fallback Chain"
+                  text="Up to 5 backup models tried top-to-bottom when the primary fails. Requests blocked by a hard budget cap (429) stop immediately, and fallback models exceeding a budget are skipped."
+                />
+              </h2>
             </div>
             <label className="mp-field mp-failover-app-field">
               <span className="mp-field-label">Application</span>
@@ -430,9 +422,20 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
           <div className="mp-failover-card-head">
             <div>
               <div className="mp-eyebrow">Telemetry</div>
-              <h2 className="mp-section-title">Recent failovers</h2>
+              <h2 className="mp-section-title">Failover attempt logs</h2>
             </div>
-            <span className="mp-badge-count">{failoverEvents.length}</span>
+            <div className="mp-failover-event-actions">
+              <span className="mp-badge-count">{failoverTotal}</span>
+              {onInspectLogs && (
+                <button
+                  type="button"
+                  className="mp-link-btn"
+                  onClick={() => onInspectLogs({ appId: activeApp.id, failover: 'only' })}
+                >
+                  Open in Logs ↗
+                </button>
+              )}
+            </div>
           </div>
 
           {loading ? (
@@ -440,40 +443,55 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
           ) : failoverEvents.length === 0 ? (
             <div className="mp-empty compact">
               <strong>No failovers recorded</strong>
-              <span>Triggered failovers will appear here with the model and reason.</span>
+              <span>Triggered failovers and per-attempt error logs will appear here.</span>
             </div>
           ) : (
             <div className="mp-failover-event-list">
-              {failoverEvents.slice(0, 8).map((event) => {
-                const trace = parseTrace(event.failover_trace);
+              {failoverEvents.map((event) => {
+                const trace = parseFailoverTrace(event.failover_trace);
                 return (
                   <div className="mp-failover-event" key={event.id}>
                     <div className="mp-failover-event-top">
                       <span className={`mp-badge ${event.status === 'success' ? 'success' : 'danger'}`}>
-                        {event.failover_used === 1 ? 'Failover' : 'Failed'}
+                        {event.failover_used === 1 ? 'Failover succeeded' : 'Failover failed'}
                       </span>
-                      <span className="font-mono">{formatTime(event.timestamp)}</span>
+                      <span className="font-mono">
+                        {formatTime(event.timestamp)} · {Math.round(event.latency_ms)} ms
+                      </span>
+                    </div>
+                    <div className="mp-failover-event-id-row">
+                      <span className="mp-failover-event-reqid font-mono" title={event.request_id}>
+                        {event.request_id}
+                      </span>
+                      {onInspectLogs && (
+                        <button
+                          type="button"
+                          className="mp-link-btn"
+                          onClick={() => onInspectLogs({
+                            appId: activeApp.id,
+                            failover: 'only',
+                            search: event.request_id
+                          })}
+                        >
+                          Inspect log ↗
+                        </button>
+                      )}
                     </div>
                     <div className="mp-failover-event-route font-mono">
                       <span>{event.failover_from_model || 'primary'}</span>
                       <span className="mp-failover-arrow">→</span>
-                      <strong>{event.model}</strong>
+                      <strong>{event.failover_used === 1 ? event.model : `${event.model} (failed)`}</strong>
                     </div>
                     <div className="mp-failover-event-meta">
-                      <span>{reasonLabel(event.failover_reason)}</span>
+                      <span>{failoverReasonLabel(event.failover_reason)}</span>
                       <span>{event.failover_attempts || 0} fallback attempt(s)</span>
-                      <span>{event.status}</span>
+                      <span>HTTP {event.http_status || (event.status === 'success' ? 200 : 'error')}</span>
                     </div>
-                    {trace.length > 0 && (
-                      <div className="mp-failover-trace">
-                        {trace.map((entry, index) => (
-                          <span key={`${event.id}-${index}`} className="font-mono">
-                            <span className="mp-failover-trace-step">{index + 1}</span>
-                            {entry.model}: {reasonLabel(entry.outcome)}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    {trace.length > 0 ? (
+                      <FailoverTraceList trace={trace} />
+                    ) : event.error_message ? (
+                      <div className="mp-failover-trace-message font-mono">{event.error_message}</div>
+                    ) : null}
                   </div>
                 );
               })}

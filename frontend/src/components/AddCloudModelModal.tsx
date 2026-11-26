@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { addCustomCloudModel, updateCustomCloudModel, testModelConnection, testStoredModel } from '../api/client';
-import { CustomCloudModel, ModelTestResult } from '../types/analytics';
+import { CustomCloudModel, ModelFormat, ModelTestResult } from '../types/analytics';
 import { CloseIcon, AlertTriangleIcon, CheckIcon, ZapIcon } from './icons/Icons';
 
 interface AddCloudModelModalProps {
@@ -10,10 +10,34 @@ interface AddCloudModelModalProps {
   modelToEdit?: CustomCloudModel | null;
 }
 
+const FORMAT_OPTIONS: Array<{ value: ModelFormat; label: string; hint: string }> = [
+  {
+    value: 'openai',
+    label: 'OpenAI-compatible',
+    hint: '/chat/completions'
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic Messages API',
+    hint: '/v1/messages'
+  }
+];
+
 const PROVIDER_PRESETS = [
+  {
+    name: 'Anthropic',
+    provider: 'anthropic',
+    format: 'anthropic' as ModelFormat,
+    apiBase: 'https://api.anthropic.com',
+    modelId: 'claude-3-5-sonnet-latest',
+    displayName: 'Claude 3.5 Sonnet',
+    contextWindow: 200000,
+    maxOutputTokens: 8192
+  },
   {
     name: 'Groq',
     provider: 'groq',
+    format: 'openai' as ModelFormat,
     apiBase: 'https://api.groq.com/openai/v1',
     modelId: 'llama-3.3-70b-versatile',
     displayName: 'Llama 3.3 70B (Groq)',
@@ -22,6 +46,7 @@ const PROVIDER_PRESETS = [
   {
     name: 'OpenAI',
     provider: 'openai',
+    format: 'openai' as ModelFormat,
     apiBase: 'https://api.openai.com/v1',
     modelId: 'gpt-4o-mini',
     displayName: 'GPT-4o Mini',
@@ -30,6 +55,7 @@ const PROVIDER_PRESETS = [
   {
     name: 'DeepSeek',
     provider: 'deepseek',
+    format: 'openai' as ModelFormat,
     apiBase: 'https://api.deepseek.com/v1',
     modelId: 'deepseek-chat',
     displayName: 'DeepSeek Chat',
@@ -38,6 +64,7 @@ const PROVIDER_PRESETS = [
   {
     name: 'OpenRouter',
     provider: 'openrouter',
+    format: 'openai' as ModelFormat,
     apiBase: 'https://openrouter.ai/api/v1',
     modelId: 'anthropic/claude-3.5-sonnet',
     displayName: 'Claude 3.5 Sonnet (OpenRouter)',
@@ -46,6 +73,7 @@ const PROVIDER_PRESETS = [
   {
     name: 'LM Studio',
     provider: 'lmstudio',
+    format: 'openai' as ModelFormat,
     apiBase: 'http://localhost:1234/v1',
     modelId: 'local-model',
     displayName: 'LM Studio Local',
@@ -54,6 +82,7 @@ const PROVIDER_PRESETS = [
   {
     name: 'vLLM / llama.cpp',
     provider: 'vllm',
+    format: 'openai' as ModelFormat,
     apiBase: 'http://localhost:8000/v1',
     modelId: 'meta-llama/Llama-3.1-8B-Instruct',
     displayName: 'vLLM Local Server',
@@ -62,6 +91,7 @@ const PROVIDER_PRESETS = [
   {
     name: 'Custom OpenAI-compatible endpoint',
     provider: 'custom',
+    format: 'openai' as ModelFormat,
     apiBase: 'http://localhost:8080/v1',
     modelId: 'custom-model-id',
     displayName: 'Custom Model',
@@ -73,6 +103,7 @@ const EMPTY_FORM = {
   displayName: '',
   modelId: '',
   provider: 'custom',
+  format: 'openai' as ModelFormat,
   apiBase: '',
   apiKey: '',
   contextWindow: '',
@@ -108,6 +139,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
         displayName: modelToEdit.displayName || '',
         modelId: modelToEdit.modelId || '',
         provider: modelToEdit.provider || 'custom',
+        format: modelToEdit.format || 'openai',
         apiBase: modelToEdit.apiBase || '',
         apiKey: '',
         contextWindow: modelToEdit.contextWindow ? String(modelToEdit.contextWindow) : '',
@@ -123,7 +155,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
 
   if (!isOpen) return null;
 
-  const update = (field: keyof typeof EMPTY_FORM, value: string) => {
+  const update = <K extends keyof typeof EMPTY_FORM,>(field: K, value: (typeof EMPTY_FORM)[K]) => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -132,10 +164,12 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
     setForm((prev) => ({
       ...prev,
       provider: preset.provider,
+      format: preset.format,
       apiBase: preset.apiBase,
       modelId: preset.modelId,
       displayName: preset.displayName,
-      contextWindow: String(preset.contextWindow)
+      contextWindow: String(preset.contextWindow),
+      maxOutputTokens: preset.maxOutputTokens ? String(preset.maxOutputTokens) : ''
     }));
   };
 
@@ -160,6 +194,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
         const result = await testStoredModel(modelToEdit.modelId, {
           apiBase: form.apiBase.trim(),
           modelId: form.modelId.trim(),
+          format: form.format,
           timeoutMs: Number(form.timeoutMs) || undefined
         });
         setTestResult(result);
@@ -168,6 +203,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
           apiBase: form.apiBase.trim(),
           apiKey: form.apiKey.trim() || undefined,
           modelId: form.modelId.trim(),
+          format: form.format,
           timeoutMs: Number(form.timeoutMs) || undefined
         });
         setTestResult(result);
@@ -194,6 +230,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
         modelId: form.modelId.trim(),
         displayName: form.displayName.trim() || form.modelId.trim(),
         provider: form.provider.trim().toLowerCase() || 'custom',
+        format: form.format,
         apiBase: form.apiBase.trim(),
         apiKey: form.apiKey.trim() || undefined,
         keepApiKey: isEditing && !form.apiKey.trim(),
@@ -226,7 +263,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
             <div className="mp-eyebrow">{isEditing ? 'Edit endpoint' : 'New endpoint'}</div>
             <h2 id="model-modal-title" className="mp-modal-title">{isEditing ? 'Edit model' : 'Add a model'}</h2>
             <p className="mp-modal-subtitle">
-              Connect an OpenAI-compatible local server or cloud provider. You can verify the connection before saving.
+              Connect an OpenAI-compatible or Anthropic-compatible endpoint. You can verify the connection before saving.
             </p>
           </div>
           <button className="mp-icon-btn" onClick={onClose} disabled={saving} aria-label="Close"><CloseIcon size={16} /></button>
@@ -280,6 +317,22 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
             </label>
 
             <label className="mp-form-field mp-form-full">
+              <span>API format</span>
+              <select
+                className="mp-select"
+                value={form.format}
+                onChange={(e) => update('format', e.target.value as ModelFormat)}
+              >
+                {FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label} ({option.hint})
+                  </option>
+                ))}
+              </select>
+              <small>How SLIR talks to this provider. Use Anthropic only for the native Anthropic API.</small>
+            </label>
+
+            <label className="mp-form-field mp-form-full">
               <span>Model identifier</span>
               <input
                 className="mp-input font-mono"
@@ -292,7 +345,7 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
               <small>
                 {isEditing
                   ? 'The identifier is fixed while editing. Add a new endpoint to route a different model id.'
-                  : <>Must match the value accepted by the provider's <code>/chat/completions</code> endpoint.</>}
+                  : <>Must match the value accepted by the provider's <code>{form.format === 'anthropic' ? '/v1/messages' : '/chat/completions'}</code> endpoint.</>}
               </small>
             </label>
 
@@ -303,10 +356,14 @@ export const AddCloudModelModal: React.FC<AddCloudModelModalProps> = ({
                 type="url"
                 value={form.apiBase}
                 onChange={(e) => update('apiBase', e.target.value)}
-                placeholder="https://api.groq.com/openai/v1"
+                placeholder={form.format === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.groq.com/openai/v1'}
                 required
               />
-              <small>Include the API version. The gateway appends <code>/chat/completions</code>.</small>
+              <small>
+                {form.format === 'anthropic'
+                  ? <>The gateway appends <code>/v1/messages</code>. Including <code>/v1</code> in the base URL is fine.</>
+                  : <>Include the API version. The gateway appends <code>/chat/completions</code>.</>}
+              </small>
             </label>
 
             <label className="mp-form-field mp-form-full">

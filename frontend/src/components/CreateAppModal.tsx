@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { createApplication } from '../api/client';
 import { ApplicationItem } from '../types/analytics';
 import { CloseIcon, AlertTriangleIcon, CheckIcon, CopyIcon, ApplicationsIcon } from './icons/Icons';
+import { InfoTip } from './InfoTip';
 import { GatewayConnectionCard } from './GatewayConnectionCard';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import { copyText } from '../utils/clipboard';
@@ -81,28 +82,12 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(5, 7, 12, 0.85)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 9999,
-      padding: '16px'
-    }} onClick={resetAndClose}>
-      <div 
+    <div className="mp-modal-backdrop" style={{ zIndex: 9999 }} onClick={resetAndClose}>
+      <div
+        className="mp-modal"
         style={{
-          background: 'var(--mp-bg-card)',
-          border: '1px solid var(--mp-border)',
-          borderRadius: '8px',
           width: '100%',
           maxWidth: '560px',
-          boxShadow: '0 20px 40px -8px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(249, 115, 22, 0.1)',
           overflow: 'hidden'
         }}
         onClick={(e) => e.stopPropagation()}
@@ -114,7 +99,7 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          background: 'rgba(255, 255, 255, 0.02)'
+          background: 'var(--mp-bg-subtle)'
         }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -306,8 +291,12 @@ export const CreateAppModal: React.FC<CreateAppModalProps> = ({
             </div>
 
             <div style={{ marginBottom: '18px' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Default Target Model
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.6875rem', fontWeight: 600, color: 'var(--mp-text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                <span>Default Target Model</span>
+                <InfoTip
+                  title="Follow Global vs Pinned Model"
+                  text="Choose 'active-model' to follow the shared Global Fallback (switchable anytime from the dashboard without touching your app). Choose a specific model to lock ('pin') this app to that model alone."
+                />
               </label>
               <select
                 value={defaultModel}

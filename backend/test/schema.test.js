@@ -15,13 +15,13 @@ function cleanup(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-test('fresh database initializes at schema version 4', () => {
+test('fresh database initializes at schema version 5', () => {
   const { dir, file } = makeTempDb();
   const db = new Database(file);
   try {
     initSchema(db, file);
     const version = db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version;
-    assert.equal(version, 4);
+    assert.equal(version, 5);
 
     const appColumns = db.prepare('PRAGMA table_info(applications)').all().map((c) => c.name);
     assert.ok(appColumns.includes('api_key'));
@@ -39,12 +39,16 @@ test('fresh database initializes at schema version 4', () => {
     assert.ok(eventColumns.includes('failover_attempts'));
     assert.ok(eventColumns.includes('failover_trace'));
 
-    const modelColumns = db.prepare('PRAGMA table_info(custom_models)').all().map((c) => c.name);
-    assert.ok(modelColumns.includes('context_window'));
-    assert.ok(modelColumns.includes('max_output_tokens'));
-    assert.ok(modelColumns.includes('input_cost_per_million'));
-    assert.ok(modelColumns.includes('output_cost_per_million'));
-    assert.ok(modelColumns.includes('timeout_ms'));
+    const modelColumns = db.prepare('PRAGMA table_info(custom_models)').all();
+    const modelColumnNames = modelColumns.map((c) => c.name);
+    assert.ok(modelColumnNames.includes('context_window'));
+    assert.ok(modelColumnNames.includes('max_output_tokens'));
+    assert.ok(modelColumnNames.includes('input_cost_per_million'));
+    assert.ok(modelColumnNames.includes('output_cost_per_million'));
+    assert.ok(modelColumnNames.includes('timeout_ms'));
+    assert.ok(modelColumnNames.includes('format'));
+    const formatColumn = modelColumns.find((c) => c.name === 'format');
+    assert.equal(formatColumn.dflt_value, "'openai'");
   } finally {
     db.close();
     cleanup(dir);

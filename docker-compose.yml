@@ -1,10 +1,10 @@
 services:
   # One image serves the dashboard, analytics API, and OpenAI-compatible gateway.
   app:
-    image: ${SLIR_IMAGE:-slir-app:latest}
+    image: ${SLIR_IMAGE:-varad177/slir-app:latest}
     build:
       context: .
-      dockerfile: Dockerfile.prod
+      dockerfile: Dockerfile
     container_name: ai_monitor_app
     restart: unless-stopped
     # Both host ports reach the same listener: 4100 for the dashboard, 4101 for the API.

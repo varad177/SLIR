@@ -44,4 +44,5 @@ pnpm-debug.log*
 # OS generated files
 .DS_Store
 Thumbs.db
-
+# Local marketing website (separate git repo)
+/slir-website/

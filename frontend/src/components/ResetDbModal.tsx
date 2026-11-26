@@ -53,28 +53,12 @@ export const ResetDbModal: React.FC<ResetDbModalProps> = ({
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(5, 7, 12, 0.85)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 9999,
-      padding: '16px'
-    }} onClick={onClose}>
-      <div 
+    <div className="mp-modal-backdrop" style={{ zIndex: 9999 }} onClick={onClose}>
+      <div
+        className="mp-modal"
         style={{
-          background: 'var(--mp-bg-card)',
-          border: '1px solid var(--mp-border)',
-          borderRadius: '8px',
           width: '100%',
           maxWidth: '520px',
-          boxShadow: '0 20px 40px -8px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(225, 29, 72, 0.2)',
           overflow: 'hidden'
         }}
         onClick={(e) => e.stopPropagation()}

@@ -52,10 +52,22 @@ export class AnalyticsService {
       conditions.push('cache_status = ?');
       params.push(filters.cacheStatus);
     }
+    if (filters.failover && filters.failover !== 'all') {
+      const f = String(filters.failover).toLowerCase();
+      if (f === 'only' || f === 'any' || f === 'true') {
+        conditions.push('(failover_used = 1 OR failover_attempts > 0 OR failover_from_model IS NOT NULL OR failover_trace IS NOT NULL)');
+      } else if (f === 'used' || f === 'succeeded') {
+        conditions.push('failover_used = 1');
+      } else if (f === 'failed') {
+        conditions.push('(failover_used = 0 AND (failover_attempts > 0 OR failover_from_model IS NOT NULL OR failover_trace IS NOT NULL))');
+      } else if (f === 'none') {
+        conditions.push('(failover_used = 0 AND failover_attempts = 0 AND failover_from_model IS NULL AND failover_trace IS NULL)');
+      }
+    }
     if (filters.search && String(filters.search).trim()) {
       const term = `%${String(filters.search).trim()}%`;
-      conditions.push('(request_id LIKE ? OR model LIKE ? OR error_message LIKE ? OR failover_from_model LIKE ? OR failover_reason LIKE ?)');
-      params.push(term, term, term, term, term);
+      conditions.push('(request_id LIKE ? OR model LIKE ? OR error_message LIKE ? OR failover_from_model LIKE ? OR failover_reason LIKE ? OR failover_trace LIKE ?)');
+      params.push(term, term, term, term, term, term);
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -74,29 +86,35 @@ export class AnalyticsService {
   }
 
   /**
-   * Nearest-rank percentile for a latency column. Only a single row is read,
-   * so this stays cheap even for large event tables.
+   * Computes p50, p95, and p99 nearest-rank percentiles for a latency column
+   * in a single table scan instead of one query per percentile.
    */
-  _percentile(filters, column, percentile) {
+  _percentiles(filters, column, targets) {
     if (!['latency_ms', 'prompt_eval_duration_ms'].includes(column)) {
       throw new Error(`Unsupported percentile column: ${column}`);
     }
     const { where, params } = this._withCondition(filters, `${column} IS NOT NULL`);
-    const count = this.db.prepare(`SELECT COUNT(*) AS count FROM usage_events ${where}`).get(...params).count;
-    if (!count) return null;
+    const rows = this.db.prepare(`
+      WITH ordered AS (
+        SELECT ${column} AS value,
+          ROW_NUMBER() OVER (ORDER BY ${column} ASC) AS rn,
+          COUNT(*) OVER () AS cnt
+        FROM usage_events
+        ${where}
+      )
+      SELECT
+        ${targets.map(({ key, p }) =>
+          `MAX(CASE WHEN rn = MIN(cnt, MAX(1, CAST((cnt * ${Math.round(p * 100)} + 99) / 100 AS INTEGER))) THEN value END) AS ${key}`
+        ).join(',\n        ')}
+      FROM ordered
+    `).get(...params);
 
-    const rank = Math.min(count - 1, Math.max(0, Math.ceil(count * percentile) - 1));
-    const row = this.db.prepare(`
-      SELECT ${column} AS value
-      FROM usage_events
-      ${where}
-      ORDER BY ${column} ASC
-      LIMIT 1 OFFSET ?
-    `).get(...params, rank);
-
-    return row?.value === null || row?.value === undefined
-      ? null
-      : Math.round(Number(row.value) * 10) / 10;
+    const out = {};
+    for (const { key } of targets) {
+      const val = rows?.[key];
+      out[key] = val === null || val === undefined ? null : Math.round(Number(val) * 10) / 10;
+    }
+    return out;
   }
 
   _cacheStats(filters) {
@@ -194,7 +212,9 @@ export class AnalyticsService {
         COALESCE(SUM(tokens_estimated), 0) AS missing_tokens_count,
         COALESCE(SUM(CASE WHEN cost_status = 'confirmed_by_provider' THEN 1 ELSE 0 END), 0) AS confirmed_cost_count,
         COALESCE(SUM(CASE WHEN cost_status = 'estimated' THEN 1 ELSE 0 END), 0) AS estimated_cost_count,
-        COALESCE(SUM(CASE WHEN cost_status = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_cost_count
+        COALESCE(SUM(CASE WHEN cost_status = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_cost_count,
+        COALESCE(SUM(CASE WHEN cache_status = 'cache_hit' THEN 1 ELSE 0 END), 0) AS cache_hits,
+        COALESCE(SUM(CASE WHEN cache_status IN ('cache_hit', 'cold_cache', 'standard') THEN 1 ELSE 0 END), 0) AS cache_reported
       FROM usage_events
       ${where}
     `;
@@ -203,8 +223,19 @@ export class AnalyticsService {
     const total = row.total_requests || 0;
     const errorRate = total > 0 ? Math.round((row.failed_requests / total) * 10000) / 100 : 0;
     const successRate = total > 0 ? Math.round((row.successful_requests / total) * 10000) / 100 : 100;
-    const cache = this._cacheStats(filters);
+    const cacheHits = Number(row.cache_hits) || 0;
+    const cacheReported = Number(row.cache_reported) || 0;
+    const cacheHitRate = cacheReported > 0 ? Math.round((cacheHits / cacheReported) * 1000) / 10 : 0;
     const projection = this._costProjection(filters, row.estimated_cost);
+    const latencyPct = this._percentiles(filters, 'latency_ms', [
+      { key: 'p50', p: 0.50 },
+      { key: 'p95', p: 0.95 },
+      { key: 'p99', p: 0.99 }
+    ]);
+    const ttftPct = this._percentiles(filters, 'prompt_eval_duration_ms', [
+      { key: 'p50', p: 0.50 },
+      { key: 'p95', p: 0.95 }
+    ]);
 
     return {
       totalRequests: total,
@@ -217,14 +248,14 @@ export class AnalyticsService {
       totalTokens: row.total_tokens,
       estimatedCost: Math.round(row.estimated_cost * 1e4) / 1e4,
       avgLatencyMs: Math.round(row.avg_latency_ms * 10) / 10,
-      latencyP50Ms: this._percentile(filters, 'latency_ms', 0.50),
-      latencyP95Ms: this._percentile(filters, 'latency_ms', 0.95),
-      latencyP99Ms: this._percentile(filters, 'latency_ms', 0.99),
-      ttftP50Ms: this._percentile(filters, 'prompt_eval_duration_ms', 0.50),
-      ttftP95Ms: this._percentile(filters, 'prompt_eval_duration_ms', 0.95),
-      cacheHitRate: cache.rate,
-      cacheHitRequests: cache.hits,
-      cacheReportedRequests: cache.reported,
+      latencyP50Ms: latencyPct.p50,
+      latencyP95Ms: latencyPct.p95,
+      latencyP99Ms: latencyPct.p99,
+      ttftP50Ms: ttftPct.p50,
+      ttftP95Ms: ttftPct.p95,
+      cacheHitRate,
+      cacheHitRequests: cacheHits,
+      cacheReportedRequests: cacheReported,
       burnRatePerDay: projection.burnRatePerDay,
       projected30dCost: projection.projected30dCost,
       missingTokensCount: row.missing_tokens_count,
@@ -243,16 +274,20 @@ export class AnalyticsService {
     const { where, params } = this._buildWhereClause(filters);
     const interval = (filters.interval || 'day').toLowerCase();
 
-    let bucketFormat = '%Y-%m-%d';
-    if (interval === 'hour') {
-      bucketFormat = '%Y-%m-%dT%H:00:00Z';
+    let bucketExpr = "strftime('%Y-%m-%d', timestamp)";
+    if (interval === 'minute') {
+      bucketExpr = "strftime('%Y-%m-%dT%H:%M:00Z', timestamp)";
+    } else if (interval === '5m') {
+      bucketExpr = "strftime('%Y-%m-%dT%H:', timestamp) || printf('%02d', (CAST(strftime('%M', timestamp) AS INTEGER) / 5) * 5) || ':00Z'";
+    } else if (interval === 'hour') {
+      bucketExpr = "strftime('%Y-%m-%dT%H:00:00Z', timestamp)";
     } else if (interval === 'month') {
-      bucketFormat = '%Y-%m';
+      bucketExpr = "strftime('%Y-%m', timestamp)";
     }
 
     const sql = `
       SELECT 
-        strftime('${bucketFormat}', timestamp) AS bucket,
+        ${bucketExpr} AS bucket,
         COUNT(*) AS requests,
         COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS successful_requests,
         COALESCE(SUM(CASE WHEN status = 'failure' THEN 1 ELSE 0 END), 0) AS failed_requests,

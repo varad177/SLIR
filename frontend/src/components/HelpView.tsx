@@ -70,7 +70,7 @@ const DASHBOARD_CARDS: Array<{
   {
     tab: 'models',
     title: 'Models & Providers',
-    description: 'See Ollama models, add cloud OpenAI-compatible providers, switch the global model, and run benchmarks.',
+    description: 'See Ollama models, add OpenAI-compatible or Anthropic cloud providers, switch the global model, and run benchmarks.',
     icon: <ModelsIcon size={16} />
   },
   {
@@ -257,7 +257,7 @@ Console.WriteLine(await response.Content.ReadAsStringAsync());`
       title: 'Quick start',
       summary: 'Create an app, choose a gateway URL, send your first request, and confirm telemetry.',
       icon: <ZapIcon size={17} />,
-      searchText: 'install setup first request start onboarding api key application gateway url curl python node dotnet docker connection',
+      searchText: 'install setup first request start onboarding api key application gateway url curl python node dotnet docker connection anthropic sdk x-api-key v1/messages claude',
       content: (
         <>
           <div className="mp-manual-step-grid">
@@ -461,6 +461,10 @@ Console.WriteLine(await response.Content.ReadAsStringAsync());`
             label={CODE_LANGUAGES.find((option) => option.id === language)?.label || 'Code'}
             code={codeExamples[language]}
           />
+
+          <Callout title="Using the official Anthropic SDK?">
+            Point the Anthropic client at the gateway root without <code>/v1</code>; the SDK appends <code>/v1/messages</code>. Pass your app key as <code>api_key</code>, which the SDK sends as <code>x-api-key</code>. Requests use the same routing, failover, budgets, and telemetry, and responses, streams, and errors come back in Anthropic format. Use a model id configured in the dashboard, such as <code>claude-model</code> or <code>active-model</code>.
+          </Callout>
 
           <div className="mp-manual-info-grid">
             <InfoCard title="Streaming">
@@ -748,7 +752,7 @@ Console.WriteLine(await response.Content.ReadAsStringAsync());`
       title: 'FAQ',
       summary: 'Short answers about model switching, OpenAI compatibility, privacy, keys, and cloud providers.',
       icon: <HelpIcon size={17} />,
-      searchText: 'faq questions does restart change global model openai sdk cloud providers multiple apps same key prompts stored reset database failover global',
+      searchText: 'faq questions does restart change global model openai sdk cloud providers anthropic native messages api claude x-api-key ingress multiple apps same key prompts stored reset database failover global',
       content: (
         <div className="mp-manual-faq">
           <details>
@@ -758,6 +762,11 @@ Console.WriteLine(await response.Content.ReadAsStringAsync());`
           <details>
             <summary>Can I use the official OpenAI SDKs?</summary>
             <p>Yes. Set the base URL to the SLIR gateway and use an app key. Python, Node.js, .NET, Go, and other OpenAI-compatible clients work.</p>
+          </details>
+          <details>
+            <summary>Can I connect the native Anthropic API?</summary>
+            <p>Yes. When adding a model, set API format to Anthropic Messages API and use <code>https://api.anthropic.com</code> as the base URL. SLIR converts requests, responses, streaming events, token usage, vision content, tool calls, and JSON structured output, so clients still talk OpenAI.</p>
+            <p>SLIR also accepts native Anthropic SDK clients at <code>POST /v1/messages</code> using <code>x-api-key</code>. Those requests run through the same routing, failover, and budgets, and responses come back in Anthropic format. Use a model id configured in the dashboard.</p>
           </details>
           <details>
             <summary>Does SLIR store my prompts?</summary>

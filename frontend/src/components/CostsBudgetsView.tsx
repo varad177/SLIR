@@ -25,6 +25,8 @@ import {
 } from '../api/client';
 import { BudgetModal } from './BudgetModal';
 import { PricingModal } from './PricingModal';
+import { ConfirmModal } from './ConfirmModal';
+import { InfoTip } from './InfoTip';
 import { copyText } from '../utils/clipboard';
 import {
   AlertTriangleIcon,
@@ -109,6 +111,8 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
   const [testingWebhook, setTestingWebhook] = useState(false);
   const [copiedPayload, setCopiedPayload] = useState(false);
   const [costAnomaly, setCostAnomaly] = useState<string | null>(null);
+  const [budgetToDelete, setBudgetToDelete] = useState<BudgetItem | null>(null);
+  const [deletingBudget, setDeletingBudget] = useState(false);
 
   const loadModels = useCallback(async () => {
     try {
@@ -181,22 +185,31 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
     () => budgets.filter((budget) => budget.enabled && budget.percent >= 100).length,
     [budgets]
   );
-  const projectedCost = useMemo(
-    () => budgets
-      .filter((budget) => budget.enabled && budget.metric === 'cost')
-      .reduce((acc, budget) => acc + (budget.projectedValue || 0), 0),
-    [budgets]
-  );
+  const projectedCost = useMemo(() => {
+    const enabledCostBudgets = budgets.filter((budget) => budget.enabled && budget.metric === 'cost');
+    if (enabledCostBudgets.length === 0) return 0;
+    // Prefer a non-overlapping global budget projection (monthly first, then daily)
+    // so multiple overlapping budgets do not double-count total spend.
+    const globalMonthly = enabledCostBudgets.find((b) => b.scope_type === 'global' && b.period === 'monthly');
+    if (globalMonthly) return globalMonthly.projectedValue || 0;
+    const globalDaily = enabledCostBudgets.find((b) => b.scope_type === 'global' && b.period === 'daily');
+    if (globalDaily) return globalDaily.projectedValue || 0;
+    return Math.max(...enabledCostBudgets.map((b) => b.projectedValue || 0));
+  }, [budgets]);
 
-  const handleDelete = async (budget: BudgetItem) => {
-    if (!window.confirm(`Delete budget "${budget.name}"? Its alert history will also be removed.`)) return;
+  const confirmDeleteBudget = async () => {
+    if (!budgetToDelete) return;
     try {
-      await deleteBudget(budget.id);
-      setNotice(`Budget "${budget.name}" deleted.`);
+      setDeletingBudget(true);
+      await deleteBudget(budgetToDelete.id);
+      setNotice(`Budget "${budgetToDelete.name}" deleted.`);
+      setBudgetToDelete(null);
       await loadAll();
       onAlertsChanged?.();
     } catch (err: any) {
       setError(err.message || 'Failed to delete budget.');
+    } finally {
+      setDeletingBudget(false);
     }
   };
 
@@ -322,10 +335,23 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
           <strong style={{ color: unacknowledged > 0 ? 'var(--mp-orange)' : undefined }}>{unacknowledged}</strong>
         </div>
         <div className="mp-costs-stat">
-          <span>Projected cost this period</span>
+          <span className="mp-label-with-tip">
+            <span>Projected cost this period</span>
+            <InfoTip
+              title="Projected Period Spend"
+              text="Estimates your total spend by the end of the current UTC day/month based on your spending rate so far (uses global cap when configured to avoid double counting)."
+            />
+          </span>
           <strong>${projectedCost.toFixed(2)}</strong>
         </div>
       </div>
+
+      {costAnomaly && (
+        <div className="mp-anomaly-banner" role="alert" aria-live="polite">
+          <AlertTriangleIcon size={14} />
+          <span>Cost anomaly detected: {costAnomaly}</span>
+        </div>
+      )}
 
       <div className="mp-section-header">
         <div>
@@ -359,15 +385,20 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
                       <span className="mp-badge-tag">{budget.period}</span>
                       <span className="mp-badge-tag">{METRIC_LABEL[budget.metric]}</span>
                       {budget.action === 'block' && (
-                        <span className="mp-badge-tag" style={{ color: 'var(--mp-red)', borderColor: 'var(--mp-red-line)' }}>
-                          hard block
-                        </span>
+                        <InfoTip
+                          title="Hard Block Enabled"
+                          text="Once this limit reaches 100%, new gateway requests matching this budget are rejected with HTTP 429 instead of forwarding to the LLM."
+                        >
+                          <span className="mp-badge-tag" style={{ color: 'var(--mp-red)', borderColor: 'var(--mp-red-line)' }}>
+                            hard block
+                          </span>
+                        </InfoTip>
                       )}
                     </div>
                   </div>
                   <div className="mp-row-actions">
                     <button className="mp-btn mp-btn-ghost" onClick={() => openEdit(budget)}>Edit</button>
-                    <button className="mp-icon-btn danger" onClick={() => handleDelete(budget)} aria-label="Delete budget">
+                    <button className="mp-icon-btn danger" onClick={() => setBudgetToDelete(budget)} aria-label="Delete budget">
                       <TrashIcon size={12} />
                     </button>
                   </div>
@@ -490,14 +521,8 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
 
       <div className="mp-section-header">
         <div>
-{costAnomaly && (
-        <div className="mp-anomaly-banner" role="alert" aria-live="polite">
-          <AlertTriangleIcon size={14} />
-          <span>Cost anomaly detected: {costAnomaly}</span>
-        </div>
-      )}
-      <div className="mp-eyebrow">Delivery</div>
-      <h2 className="mp-section-title">Webhook settings</h2>
+          <div className="mp-eyebrow">Delivery</div>
+          <h2 className="mp-section-title">Webhook settings</h2>
         </div>
       </div>
 
@@ -573,6 +598,18 @@ export const CostsBudgetsView: React.FC<CostsBudgetsViewProps> = ({ applications
         isOpen={pricingOpen}
         onClose={() => { setPricingOpen(false); loadAll(); }}
         providers={Array.from(new Set(pricingRules.map((rule) => rule.provider)))}
+      />
+
+      <ConfirmModal
+        isOpen={Boolean(budgetToDelete)}
+        title="Delete budget"
+        message={`Delete budget "${budgetToDelete?.name}"?`}
+        subMessage="All threshold alert history for this budget will also be permanently removed."
+        confirmLabel="Delete budget"
+        isDanger={true}
+        loading={deletingBudget}
+        onConfirm={confirmDeleteBudget}
+        onClose={() => setBudgetToDelete(null)}
       />
     </div>
   );

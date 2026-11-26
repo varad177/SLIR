@@ -130,13 +130,14 @@ export interface FilterOptions {
 }
 
 export interface ActiveFilters {
-  interval: 'hour' | 'day' | 'month';
+  interval: 'minute' | '5m' | 'hour' | 'day' | 'month';
   status: string;
   model: string;
   provider: string;
   appId: string;
   streaming?: string;
   cacheStatus?: string;
+  failover?: string;
   start?: string;
   end?: string;
   search?: string;
@@ -155,11 +156,14 @@ export interface OllamaModelInfo {
   modifiedAt?: string;
 }
 
+export type ModelFormat = 'openai' | 'anthropic';
+
 export interface CustomCloudModel {
   id?: number;
   modelId: string;
   displayName: string;
   provider: string;
+  format?: ModelFormat;
   apiBase: string;
   apiKey?: string;
   keepApiKey?: boolean;

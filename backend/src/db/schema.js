@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'node:crypto';
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const BACKUPS_TO_KEEP = 5;
 
 const BASE_SCHEMA = `
@@ -83,6 +83,7 @@ const BASE_SCHEMA = `
     model_id TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     provider TEXT NOT NULL,
+    format TEXT NOT NULL DEFAULT 'openai',
     api_base TEXT NOT NULL,
     api_key TEXT,
     context_window INTEGER,
@@ -232,6 +233,10 @@ export function initSchema(db, dbPath = process.env.DATABASE_PATH || './data/mon
   addColumn(db, 'usage_events', 'failover_reason', 'TEXT');
   addColumn(db, 'usage_events', 'failover_attempts', 'INTEGER NOT NULL DEFAULT 0');
   addColumn(db, 'usage_events', 'failover_trace', 'TEXT');
+
+  // Migration 4: upstream API format per custom model. Existing models keep
+  // the OpenAI-compatible behavior they were created with.
+  addColumn(db, 'custom_models', 'format', "TEXT NOT NULL DEFAULT 'openai'");
 
   // A legacy database may contain duplicate API keys, which makes API-key
   // lookup ambiguous. Keep the oldest application for each key and issue a

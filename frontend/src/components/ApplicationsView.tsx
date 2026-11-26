@@ -4,9 +4,11 @@ import { fetchApplications, deleteApplication, regenerateAppKey, updateApplicati
 import { CreateAppModal } from './CreateAppModal';
 import { ConfirmModal } from './ConfirmModal';
 import { GatewayConnectionCard } from './GatewayConnectionCard';
+import { InfoTip } from './InfoTip';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import { copyText } from '../utils/clipboard';
 import {
+  AlertTriangleIcon,
   CopyIcon,
   CheckIcon,
   EyeIcon,
@@ -20,6 +22,7 @@ interface ApplicationsViewProps {
   applications?: ApplicationItem[];
   onApplicationsChange?: () => void;
   onSelectAppForPlayground?: (appId: string) => void;
+  onInspectAppLogs?: (appId: string) => void;
   installedModels?: string[];
 }
 
@@ -27,6 +30,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
   applications,
   onApplicationsChange,
   onSelectAppForPlayground,
+  onInspectAppLogs,
   installedModels = ['active-model', 'qwen2.5:3b']
 }) => {
   const [apps, setApps] = useState<ApplicationItem[]>(applications || []);
@@ -36,13 +40,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
   const [copiedKey, setCopiedKey] = useState<boolean>(false);
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
-  const [activeCodeTab, setActiveCodeTab] = useState<'python' | 'csharp' | 'node' | 'curl'>('python');
+  const [activeCodeTab, setActiveCodeTab] = useState<'python' | 'anthropic' | 'csharp' | 'node' | 'curl'>('python');
   const [gatewayBaseUrl, setGatewayBaseUrl] = useState(getBrowserGatewayBaseUrl());
 
   // Confirmation Modals State
   const [appToDelete, setAppToDelete] = useState<ApplicationItem | null>(null);
   const [appToRotateKey, setAppToRotateKey] = useState<ApplicationItem | null>(null);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [routingSaving, setRoutingSaving] = useState<boolean>(false);
   const [routingFeedback, setRoutingFeedback] = useState<string | null>(null);
 
@@ -76,13 +81,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
     if (!appToDelete) return;
     try {
       setActionLoading(true);
+      setActionError(null);
       await deleteApplication(appToDelete.id);
       const remaining = apps.filter(a => a.id !== appToDelete.id);
       setApps(remaining);
       setSelectedApp(remaining.length > 0 ? remaining[0] : null);
       if (onApplicationsChange) onApplicationsChange();
     } catch (err: any) {
-      alert(`Failed to delete application: ${err.message}`);
+      setActionError(`Failed to delete application: ${err.message}`);
     } finally {
       setActionLoading(false);
       setAppToDelete(null);
@@ -93,6 +99,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
     if (!appToRotateKey) return;
     try {
       setActionLoading(true);
+      setActionError(null);
       const res = await regenerateAppKey(appToRotateKey.id);
       if (res.success && res.apiKey) {
         const updated = apps.map(a => a.id === appToRotateKey.id ? { ...a, apiKey: res.apiKey, maskedApiKey: res.maskedApiKey } : a);
@@ -101,7 +108,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({
         if (onApplicationsChange) onApplicationsChange();
       }
     } catch (err: any) {
-      alert(`Failed to rotate key: ${err.message}`);
+      setActionError(`Failed to rotate key: ${err.message}`);
     } finally {
       setActionLoading(false);
       setAppToRotateKey(null);
@@ -156,6 +163,24 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello gateway!"}]
 )
 print(response.choices[0].message.content)`;
+
+      case 'anthropic': {
+        const anthropicRoot = currentBaseUrl.replace(/\/v1\/?$/, '');
+        return `# Official Anthropic SDK (/v1/messages)
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="${anthropicRoot}",
+    api_key="${currentKey}"
+)
+
+msg = client.messages.create(
+    model="${currentModel}",
+    max_tokens=512,
+    messages=[{"role": "user", "content": "Hello gateway!"}]
+)
+print(msg.content[0].text)`;
+      }
 
       case 'csharp':
         return `// C# .NET 8 HttpClient Implementation
@@ -255,6 +280,14 @@ console.log(completion.choices[0].message.content);`;
       </div>
 
       {/* 2. 4 Top Stat Cards */}
+      {actionError && (
+        <div className="mp-alert error">
+          <AlertTriangleIcon size={14} />
+          <span>{actionError}</span>
+          <button onClick={() => setActionError(null)} aria-label="Dismiss">×</button>
+        </div>
+      )}
+
       <div className="mp-4stat-grid">
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -264,10 +297,10 @@ console.log(completion.choices[0].message.content);`;
             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-green)' }} />
           </div>
           <div style={{ fontSize: '1.375rem', fontWeight: 800, color: 'var(--mp-text-primary)', margin: '6px 0 2px 0' }} className="font-mono">
-            {apps.length} <span style={{ fontSize: '0.8125rem', color: 'var(--mp-green)', fontWeight: 600 }}>Active in Cluster</span>
+            {apps.length} <span style={{ fontSize: '0.8125rem', color: 'var(--mp-green)', fontWeight: 600 }}>Active</span>
           </div>
           <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }} className="font-mono">
-            0 suspended · 0 standby
+            {apps.filter(a => a.failoverEnabled).length} with failover enabled
           </div>
         </div>
 
@@ -288,14 +321,14 @@ console.log(completion.choices[0].message.content);`;
             {gatewayBaseUrl}
           </div>
           <div style={{ fontSize: '0.6875rem', color: 'var(--mp-text-muted)' }} className="font-mono">
-            v1 Spec Compliant · HTTP/2 Loopback
+            OpenAI &amp; Anthropic /v1 API
           </div>
         </div>
 
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
-              24H GATEWAY REQS
+              TOTAL GATEWAY REQS
             </span>
             <span style={{ fontSize: '0.6875rem', color: 'var(--mp-green)' }} className="font-mono">
               {totalAppsReqs > 0 ? 'Active' : 'Idle'}
@@ -311,21 +344,34 @@ console.log(completion.choices[0].message.content);`;
 
         <div className="mp-stat-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
-              SELECTED APP ROUTING
+            <span className="mp-label-with-tip" style={{ fontSize: '0.6875rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
+              <span>SELECTED APP ROUTING</span>
+              <InfoTip
+                title="Global vs Pinned Routing"
+                text="Global means the app uses whichever model is currently set as the Global Fallback when sending 'active-model'. Pinned means this app stays locked to one specific model."
+              />
             </span>
-            <span
-              style={{
-                fontSize: '0.625rem',
-                background: 'rgba(255, 255, 255, 0.05)',
-                padding: '1px 5px',
-                borderRadius: '3px',
-                color: 'var(--mp-text-secondary)'
-              }}
-              className="font-mono"
+            <InfoTip
+              title={currentModel === 'active-model' ? 'Global routing' : 'Pinned routing'}
+              text={
+                currentModel === 'active-model'
+                  ? 'Follows the shared Global Fallback model. Changing the global model updates this app automatically.'
+                  : `Locked ("pinned") to ${currentModel}. Global model changes do not affect this app.`
+              }
             >
-              {currentModel === 'active-model' ? 'Global' : 'Pinned'}
-            </span>
+              <span
+                style={{
+                  fontSize: '0.625rem',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  padding: '1px 5px',
+                  borderRadius: '3px',
+                  color: 'var(--mp-text-secondary)'
+                }}
+                className="font-mono"
+              >
+                {currentModel === 'active-model' ? 'Global' : 'Pinned'}
+              </span>
+            </InfoTip>
           </div>
           <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--mp-text-primary)', margin: '6px 0 2px 0' }} className="font-mono">
             {currentModel}
@@ -499,9 +545,14 @@ console.log(completion.choices[0].message.content);`;
               <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'var(--mp-green)' }} />
               All clients authenticate with virtual API keys. Telemetry is tracked per application.
             </span>
-            <span style={{ color: 'var(--mp-cyan)', cursor: 'pointer' }}>
+            <button
+              type="button"
+              onClick={() => onInspectAppLogs?.(current?.id || '')}
+              className="mp-link-btn"
+              style={{ fontSize: '0.6875rem' }}
+            >
               Audit Gateway Logs ↗
-            </span>
+            </button>
           </div>
         </div>
 
@@ -546,8 +597,12 @@ console.log(completion.choices[0].message.content);`;
             {/* Virtual Gateway Key Card */}
             <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', padding: '10px' }} className="font-mono">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
-                  VIRTUAL GATEWAY KEY
+                <span className="mp-label-with-tip" style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
+                  <span>VIRTUAL GATEWAY KEY</span>
+                  <InfoTip
+                    title="Virtual Gateway Key"
+                    text="Send this Bearer token in your app's Authorization header (or OpenAI SDK api_key). SLIR uses it to identify the app, track usage/costs, and apply routing & failover rules."
+                  />
                 </span>
                 <span style={{ fontSize: '0.625rem', color: 'var(--mp-text-secondary)' }}>
                   Hidden until revealed
@@ -588,12 +643,25 @@ console.log(completion.choices[0].message.content);`;
             {/* Model routing for this application */}
             <div style={{ background: 'var(--mp-surface-input)', border: '1px solid var(--mp-border)', borderRadius: '6px', padding: '10px' }} className="font-mono">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <span style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
-                  MODEL ROUTING
+                <span className="mp-label-with-tip" style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--mp-text-muted)' }}>
+                  <span>MODEL ROUTING</span>
+                  <InfoTip
+                    title="Application Default Model"
+                    text="'Follow global fallback' lets you switch models from the Models tab for all unpinned apps at once. 'Pin to <model>' locks this app to one model regardless of global changes."
+                  />
                 </span>
-                <span className={`mp-badge ${current.defaultModel === 'active-model' ? 'neutral' : 'warn'}`}>
-                  {current.defaultModel === 'active-model' ? 'Global fallback' : 'Pinned'}
-                </span>
+                <InfoTip
+                  title={current.defaultModel === 'active-model' ? 'Global fallback' : 'Pinned model'}
+                  text={
+                    current.defaultModel === 'active-model'
+                      ? 'Requests with model "active-model" follow the shared Global Fallback.'
+                      : `Requests with model "active-model" are locked to ${current.defaultModel}.`
+                  }
+                >
+                  <span className={`mp-badge ${current.defaultModel === 'active-model' ? 'neutral' : 'warn'}`}>
+                    {current.defaultModel === 'active-model' ? 'Global fallback' : 'Pinned'}
+                  </span>
+                </InfoTip>
               </div>
               <select
                 className="mp-select font-mono"
@@ -644,8 +712,8 @@ console.log(completion.choices[0].message.content);`;
               </div>
 
               {/* Tabs */}
-              <div style={{ display: 'flex', gap: '3px', marginBottom: '8px' }}>
-                {(['python', 'csharp', 'node', 'curl'] as const).map(tab => (
+              <div style={{ display: 'flex', gap: '3px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                {(['python', 'anthropic', 'csharp', 'node', 'curl'] as const).map(tab => (
                   <button
                     key={tab}
                     onClick={() => setActiveCodeTab(tab)}
@@ -660,7 +728,15 @@ console.log(completion.choices[0].message.content);`;
                       cursor: 'pointer'
                     }}
                   >
-                    {tab === 'python' ? 'Python' : tab === 'csharp' ? 'C# (.NET 8)' : tab === 'node' ? 'Node.js' : 'cURL'}
+                    {tab === 'python'
+                      ? 'Python (OpenAI)'
+                      : tab === 'anthropic'
+                        ? 'Python (Anthropic)'
+                        : tab === 'csharp'
+                          ? 'C# (.NET 8)'
+                          : tab === 'node'
+                            ? 'Node.js'
+                            : 'cURL'}
                   </button>
                 ))}
               </div>

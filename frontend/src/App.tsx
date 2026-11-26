@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { 
   SummaryKpis, 
   TimeSeriesPoint, 
@@ -15,16 +15,18 @@ import {
 } from './api/client';
 import { AppSidebar, NavTab } from './components/AppSidebar';
 import { OverviewView } from './components/OverviewView';
-import { ApplicationsView } from './components/ApplicationsView';
-import { PlaygroundView } from './components/PlaygroundView';
-import { RequestLogsView } from './components/RequestLogsView';
-import { ModelsHubView } from './components/ModelsHubView';
-import { CostsBudgetsView } from './components/CostsBudgetsView';
-import { FailoverView } from './components/FailoverView';
-import { HelpView } from './components/HelpView';
 import { CommandPalette } from './components/CommandPalette';
 import { ResetDbModal } from './components/ResetDbModal';
+
+const ApplicationsView = lazy(() => import('./components/ApplicationsView').then((m) => ({ default: m.ApplicationsView })));
+const PlaygroundView = lazy(() => import('./components/PlaygroundView').then((m) => ({ default: m.PlaygroundView })));
+const RequestLogsView = lazy(() => import('./components/RequestLogsView').then((m) => ({ default: m.RequestLogsView })));
+const ModelsHubView = lazy(() => import('./components/ModelsHubView').then((m) => ({ default: m.ModelsHubView })));
+const CostsBudgetsView = lazy(() => import('./components/CostsBudgetsView').then((m) => ({ default: m.CostsBudgetsView })));
+const FailoverView = lazy(() => import('./components/FailoverView').then((m) => ({ default: m.FailoverView })));
+const HelpView = lazy(() => import('./components/HelpView').then((m) => ({ default: m.HelpView })));
 import { CopyIcon, CheckIcon, CloseIcon, BellIcon, SunIcon, MoonIcon } from './components/icons/Icons';
+import { InfoTip } from './components/InfoTip';
 import { useTheme } from './design-system/ThemeProvider';
 import { DEFAULT_GATEWAY_PORT, fetchGatewayConfig, getBrowserGatewayBaseUrl } from './utils/gatewayConnection';
 import { copyText } from './utils/clipboard';
@@ -63,6 +65,27 @@ export const App: React.FC = () => {
   );
   const [gatewayPort, setGatewayPort] = useState<number>(DEFAULT_GATEWAY_PORT);
   const [unacknowledgedAlerts, setUnacknowledgedAlerts] = useState<number>(0);
+  const [logsLaunchTarget, setLogsLaunchTarget] = useState<{
+    failover?: 'all' | 'only' | 'used' | 'failed' | 'none';
+    search?: string;
+    nonce: number;
+  } | null>(null);
+
+  const inspectLogs = useCallback((options: {
+    appId?: string | null;
+    failover?: 'all' | 'only' | 'used' | 'failed' | 'none';
+    search?: string;
+  }) => {
+    if (options.appId !== undefined) {
+      setSelectedAppId(options.appId);
+    }
+    setLogsLaunchTarget({
+      failover: options.failover ?? 'all',
+      search: options.search ?? '',
+      nonce: Date.now()
+    });
+    setCurrentTab('logs');
+  }, []);
 
   const refreshAlertCount = useCallback(async () => {
     try {
@@ -170,7 +193,15 @@ export const App: React.FC = () => {
     const timeframeStart = isAllTime
       ? undefined
       : new Date(Date.now() - OVERVIEW_TIMEFRAME_MS[overviewTimeframe]).toISOString();
-    const timeframeInterval = isAllTime ? 'month' : overviewTimeframe === '7d' ? 'day' : 'hour';
+    const timeframeInterval = isAllTime
+      ? 'month'
+      : overviewTimeframe === '7d'
+        ? 'day'
+        : overviewTimeframe === '15m'
+          ? 'minute'
+          : overviewTimeframe === '1h'
+            ? '5m'
+            : 'hour';
     try {
       const [sumData, tsData, reqData, appsData, modelsData] = await Promise.all([
         fetchSummary({ interval: timeframeInterval, start: timeframeStart, appId: selectedAppId ?? undefined }).catch(() => null),
@@ -292,7 +323,10 @@ export const App: React.FC = () => {
       {/* 1. Left Sidebar Navigation */}
       <AppSidebar
         currentTab={currentTab}
-        onTabChange={setCurrentTab}
+        onTabChange={(tab) => {
+          if (tab !== 'logs') setLogsLaunchTarget(null);
+          setCurrentTab(tab);
+        }}
         applications={applications}
         selectedAppId={selectedAppId ?? null}
         onSelectAppId={setSelectedAppId}
@@ -324,44 +358,54 @@ export const App: React.FC = () => {
             </span>
 
             {/* Active Model Breadcrumb Pill */}
-            <div
-              className="font-mono"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                background: 'var(--mp-hover-bg)',
-                border: '1px solid var(--mp-border)',
-                padding: '2px 8px',
-                borderRadius: '5px',
-                fontSize: '0.6875rem',
-                color: 'var(--mp-text-primary)',
-                marginLeft: '4px'
-              }}
+            <InfoTip
+              title="Global fallback model"
+              text="The shared default model used by any app set to 'Follow global' (model: 'active-model'). Apps pinned to their own model ignore this setting."
+              example="Switch this anytime on the Models tab"
             >
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-orange)' }} />
-              <span style={{ color: 'var(--mp-text-secondary)' }}>Global:</span>
-              <strong style={{ color: 'var(--mp-text-primary)' }}>{activeModel.length > 24 ? `${activeModel.slice(0, 22)}...` : activeModel}</strong>
-            </div>
+              <div
+                className="font-mono"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'var(--mp-hover-bg)',
+                  border: '1px solid var(--mp-border)',
+                  padding: '2px 8px',
+                  borderRadius: '5px',
+                  fontSize: '0.6875rem',
+                  color: 'var(--mp-text-primary)',
+                  marginLeft: '4px'
+                }}
+              >
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--mp-orange)' }} />
+                <span style={{ color: 'var(--mp-text-secondary)' }}>Global:</span>
+                <strong style={{ color: 'var(--mp-text-primary)' }}>{activeModel.length > 24 ? `${activeModel.slice(0, 22)}...` : activeModel}</strong>
+              </div>
+            </InfoTip>
 
-            <div
-              className="font-mono"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                background: 'var(--mp-hover-bg-subtle)',
-                border: '1px solid var(--mp-border)',
-                padding: '2px 8px',
-                borderRadius: '5px',
-                fontSize: '0.6875rem',
-                color: 'var(--mp-text-secondary)',
-                marginLeft: '2px'
-              }}
-              title="Analytics scope selected in the sidebar"
+            <InfoTip
+              title="Dashboard analytics scope"
+              text="Shows which application's telemetry you are currently filtering by in the sidebar. Choose 'All applications' to see combined metrics."
             >
-              {selectedAppId === null ? 'All applications' : (scopedApp?.name || 'Select application')}
-            </div>
+              <div
+                className="font-mono"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'var(--mp-hover-bg-subtle)',
+                  border: '1px solid var(--mp-border)',
+                  padding: '2px 8px',
+                  borderRadius: '5px',
+                  fontSize: '0.6875rem',
+                  color: 'var(--mp-text-secondary)',
+                  marginLeft: '2px'
+                }}
+              >
+                {selectedAppId === null ? 'All applications' : (scopedApp?.name || 'Select application')}
+              </div>
+            </InfoTip>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }} className="font-mono">
@@ -483,90 +527,101 @@ export const App: React.FC = () => {
 
         {/* Page Body View Router */}
         <main className="mp-page-body">
-          {currentTab === 'overview' && (
-            <OverviewView
-              summary={summary}
-              timeSeries={timeSeries}
-              requests={requests}
-              page={page}
-              onPageChange={setPage}
-              benchmarkRefresh={benchmarkRefresh}
-              onModelSwitched={handleBenchmarkComplete}
-              onNavigateToTab={setCurrentTab}
-              onClearDatabase={handleOpenResetModal}
-              activeModel={activeModel}
-              applications={applications}
-              selectedAppId={routingAppId}
-              allAppsScope={selectedAppId === null}
-              onSelectAppId={(appId) => setSelectedAppId(appId)}
-              activeTimeframe={overviewTimeframe}
-              onTimeframeChange={setOverviewTimeframe}
-              gatewayPort={gatewayPort}
-            />
-          )}
+          <Suspense fallback={<div className="mp-empty compact"><strong>Loading view...</strong></div>}>
+            {currentTab === 'overview' && (
+              <OverviewView
+                summary={summary}
+                timeSeries={timeSeries}
+                requests={requests}
+                page={page}
+                onPageChange={setPage}
+                benchmarkRefresh={benchmarkRefresh}
+                onModelSwitched={handleBenchmarkComplete}
+                onNavigateToTab={setCurrentTab}
+                onClearDatabase={handleOpenResetModal}
+                activeModel={activeModel}
+                applications={applications}
+                selectedAppId={routingAppId}
+                allAppsScope={selectedAppId === null}
+                onSelectAppId={(appId) => setSelectedAppId(appId)}
+                activeTimeframe={overviewTimeframe}
+                onTimeframeChange={setOverviewTimeframe}
+                onInspectRequest={(requestId) => inspectLogs({ failover: 'only', search: requestId })}
+                gatewayPort={gatewayPort}
+              />
+            )}
 
-          {currentTab === 'playground' && (
-            <PlaygroundView
-              installedModels={installedModels}
-              applications={applications}
-              activeModel={activeModel}
-              gatewayPort={gatewayPort}
-              onBenchmarkComplete={handleBenchmarkComplete}
-            />
-          )}
+            {currentTab === 'playground' && (
+              <PlaygroundView
+                installedModels={installedModels}
+                applications={applications}
+                activeModel={activeModel}
+                gatewayPort={gatewayPort}
+                onBenchmarkComplete={handleBenchmarkComplete}
+              />
+            )}
 
-          {currentTab === 'models' && (
-            <ModelsHubView
-              onModelSwitched={handleBenchmarkComplete}
-              refreshTrigger={benchmarkRefresh}
-              applications={applications}
-            />
-          )}
+            {currentTab === 'models' && (
+              <ModelsHubView
+                onModelSwitched={handleBenchmarkComplete}
+                refreshTrigger={benchmarkRefresh}
+                applications={applications}
+              />
+            )}
 
-          {currentTab === 'apps' && (
-            <ApplicationsView
-              applications={applications}
-              onApplicationsChange={loadDashboardData}
-              installedModels={installedModels}
-              onSelectAppForPlayground={() => setCurrentTab('playground')}
-            />
-          )}
+            {currentTab === 'apps' && (
+              <ApplicationsView
+                applications={applications}
+                onApplicationsChange={loadDashboardData}
+                installedModels={installedModels}
+                onSelectAppForPlayground={() => setCurrentTab('playground')}
+                onInspectAppLogs={(appId) => {
+                  setSelectedAppId(appId);
+                  setCurrentTab('logs');
+                }}
+              />
+            )}
 
-          {currentTab === 'logs' && (
-            <RequestLogsView
-              applications={applications}
-              installedModels={installedModels}
-              initialAppId={selectedAppId ?? null}
-              onClearDatabase={handleOpenResetModal}
-              onReplayInPlayground={() => setCurrentTab('playground')}
-            />
-          )}
+            {currentTab === 'logs' && (
+              <RequestLogsView
+                applications={applications}
+                installedModels={installedModels}
+                initialAppId={selectedAppId ?? null}
+                initialFailoverFilter={logsLaunchTarget?.failover}
+                initialSearch={logsLaunchTarget?.search}
+                initialFocusNonce={logsLaunchTarget?.nonce}
+                onClearDatabase={handleOpenResetModal}
+                onReplayInPlayground={() => setCurrentTab('playground')}
+              />
+            )}
 
-          {currentTab === 'costs' && (
-            <CostsBudgetsView
-              applications={applications}
-              onAlertsChanged={refreshAlertCount}
-            />
-          )}
+            {currentTab === 'costs' && (
+              <CostsBudgetsView
+                applications={applications}
+                onAlertsChanged={refreshAlertCount}
+              />
+            )}
 
-          {currentTab === 'failover' && (
-            <FailoverView
-              applications={applications}
-              selectedAppId={routingAppId}
-              onSelectAppId={setSelectedAppId}
-              onApplicationsChanged={loadDashboardData}
-            />
-          )}
+            {currentTab === 'failover' && (
+              <FailoverView
+                applications={applications}
+                selectedAppId={routingAppId}
+                onSelectAppId={setSelectedAppId}
+                onApplicationsChanged={loadDashboardData}
+                onInspectLogs={(opts) => inspectLogs(opts)}
+              />
+            )}
 
-          {currentTab === 'help' && (
-            <HelpView
-              applications={applications}
-              selectedAppId={selectedAppId ?? null}
-              activeModel={activeModel}
-              gatewayPort={gatewayPort}
-              onNavigateToTab={setCurrentTab}
-            />
-          )}
+            {currentTab === 'help' && (
+              <HelpView
+                applications={applications}
+                selectedAppId={selectedAppId ?? null}
+                activeModel={activeModel}
+                gatewayPort={gatewayPort}
+                onNavigateToTab={setCurrentTab}
+              />
+            )}
+          </Suspense>
         </main>
       </div>
 

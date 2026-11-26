@@ -3,6 +3,10 @@ import {
   LOCAL_TIMEOUT_MS,
   getOllamaUrls
 } from './ollamaEndpoints.js';
+import { getAdapter, joinEndpoint, normalizeFormat } from '../adapters/index.js';
+import { invalidatePricingCache } from '../db/pricingEngine.js';
+import { UsageRepository } from '../db/repository.js';
+import { executeModelAttempt } from './gatewayFailover.js';
 
 /**
  * Service for managing local Ollama models and dynamic model switching
@@ -139,7 +143,7 @@ export class OllamaService {
   getCustomModels(db) {
     try {
       const rows = db.prepare(`
-        SELECT id, model_id, display_name, provider, api_base, api_key,
+        SELECT id, model_id, display_name, provider, format, api_base, api_key,
                context_window, max_output_tokens, input_cost_per_million,
                output_cost_per_million, timeout_ms, created_at
         FROM custom_models ORDER BY id DESC
@@ -149,6 +153,7 @@ export class OllamaService {
         modelId: r.model_id,
         displayName: r.display_name,
         provider: r.provider,
+        format: r.format || 'openai',
         apiBase: r.api_base,
         hasApiKey: Boolean(r.api_key && r.api_key.trim().length > 0),
         maskedApiKey: r.api_key ? (r.api_key.length > 8 ? `${r.api_key.slice(0, 4)}...${r.api_key.slice(-4)}` : '••••••••') : '',
@@ -180,7 +185,7 @@ export class OllamaService {
    * Adds or updates a user-configured cloud model (e.g. Groq, OpenAI, DeepSeek, vLLM)
    */
   addCustomModel(db, {
-    modelId, displayName, provider = 'cloud', apiBase, apiKey = '',
+    modelId, displayName, provider = 'cloud', format = 'openai', apiBase, apiKey = '',
     contextWindow, maxOutputTokens, inputCostPerMillion, outputCostPerMillion,
     timeoutMs, keepApiKey = false
   }) {
@@ -191,6 +196,7 @@ export class OllamaService {
     const cleanModelId = modelId.trim();
     const cleanDisplayName = (displayName || cleanModelId).trim();
     const cleanProvider = (provider || 'cloud').trim().toLowerCase();
+    const cleanFormat = normalizeFormat(format);
     const cleanApiBase = apiBase.trim().replace(/\/+$/, '');
     const existing = db.prepare('SELECT api_key FROM custom_models WHERE model_id = ?').get(cleanModelId);
     const preserveKey = keepApiKey === true || apiKey === undefined || apiKey === null;
@@ -207,14 +213,15 @@ export class OllamaService {
 
     db.prepare(`
       INSERT INTO custom_models (
-        model_id, display_name, provider, api_base, api_key,
+        model_id, display_name, provider, format, api_base, api_key,
         context_window, max_output_tokens, input_cost_per_million,
         output_cost_per_million, timeout_ms, created_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
       ON CONFLICT(model_id) DO UPDATE SET
         display_name = excluded.display_name,
         provider = excluded.provider,
+        format = excluded.format,
         api_base = excluded.api_base,
         api_key = excluded.api_key,
         context_window = excluded.context_window,
@@ -223,10 +230,12 @@ export class OllamaService {
         output_cost_per_million = excluded.output_cost_per_million,
         timeout_ms = excluded.timeout_ms
     `).run(
-      cleanModelId, cleanDisplayName, cleanProvider, cleanApiBase, cleanApiKey,
+      cleanModelId, cleanDisplayName, cleanProvider, cleanFormat, cleanApiBase, cleanApiKey,
       meta.contextWindow, meta.maxOutputTokens, meta.inputCostPerMillion,
       meta.outputCostPerMillion, meta.timeoutMs
     );
+
+    invalidatePricingCache(db);
 
     return {
       success: true,
@@ -234,6 +243,7 @@ export class OllamaService {
         modelId: cleanModelId,
         displayName: cleanDisplayName,
         provider: cleanProvider,
+        format: cleanFormat,
         apiBase: cleanApiBase,
         hasApiKey: Boolean(cleanApiKey),
         ...meta
@@ -258,6 +268,9 @@ export class OllamaService {
     const provider = fields.provider !== undefined
       ? String(fields.provider).trim().toLowerCase() || existing.provider
       : existing.provider;
+    const format = fields.format !== undefined
+      ? normalizeFormat(fields.format)
+      : (existing.format || 'openai');
     const apiBase = fields.apiBase !== undefined
       ? String(fields.apiBase).trim().replace(/\/+$/, '')
       : existing.api_base;
@@ -273,12 +286,12 @@ export class OllamaService {
 
     db.prepare(`
       UPDATE custom_models SET
-        display_name = ?, provider = ?, api_base = ?, api_key = ?,
+        display_name = ?, provider = ?, format = ?, api_base = ?, api_key = ?,
         context_window = ?, max_output_tokens = ?, input_cost_per_million = ?,
         output_cost_per_million = ?, timeout_ms = ?
       WHERE model_id = ?
     `).run(
-      displayName, provider, apiBase, apiKey,
+      displayName, provider, format, apiBase, apiKey,
       this._nullableInt(fields.contextWindow ?? existing.context_window),
       this._nullableInt(fields.maxOutputTokens ?? existing.max_output_tokens),
       this._nullableFloat(fields.inputCostPerMillion ?? existing.input_cost_per_million),
@@ -287,6 +300,8 @@ export class OllamaService {
       modelId
     );
 
+    invalidatePricingCache(db);
+
     return {
       success: true,
       model: this.getCustomModels(db).find((m) => m.modelId === modelId)
@@ -294,31 +309,35 @@ export class OllamaService {
   }
 
   /**
-   * Sends a minimal OpenAI-compatible chat request to verify endpoint, key,
-   * model id, and latency. Expected provider failures are returned, not thrown,
-   * so the UI can show actionable diagnostics.
+   * Sends a minimal chat request in the configured upstream API format to
+   * verify endpoint, key, model id, and latency. Expected provider failures
+   * are returned, not thrown, so the UI can show actionable diagnostics.
    */
-  async testModelConnection({ apiBase, apiKey, modelId, timeoutMs = CLOUD_CONNECTION_TEST_TIMEOUT_MS }) {
+  async testModelConnection({ apiBase, apiKey, modelId, timeoutMs = CLOUD_CONNECTION_TEST_TIMEOUT_MS, format = 'openai' }) {
     if (!apiBase || !modelId) {
       return { ok: false, errorType: 'validation', message: 'API base URL and model ID are required.' };
     }
 
     const base = String(apiBase).trim().replace(/\/+$/, '');
+    const adapter = getAdapter(format);
+    const modelConfig = { model_id: modelId, api_base: base };
+    const endpoint = joinEndpoint(base, adapter.getEndpointPath(modelConfig));
     const timeout = Math.max(2000, Math.min(Number(timeoutMs) || CLOUD_CONNECTION_TEST_TIMEOUT_MS, 60000));
-    const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const headers = adapter.buildHeaders(apiKey, modelConfig);
+    const requestBody = {
+      model: modelId,
+      messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
+      max_tokens: 8,
+      temperature: 0
+    };
+    const payload = adapter.buildRequestBody(requestBody, modelConfig);
     const startedAt = performance.now();
 
     try {
-      const res = await fetch(`${base}/chat/completions`, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: modelId,
-          messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
-          max_tokens: 8,
-          temperature: 0
-        }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(timeout)
       });
       const latencyMs = Math.round((performance.now() - startedAt) * 10) / 10;
@@ -330,22 +349,25 @@ export class OllamaService {
         else if (res.status === 404) errorType = 'not_found';
         else if (res.status === 429) errorType = 'rate_limit';
         else if (res.status >= 400 && res.status < 500) errorType = 'invalid_request';
+        const message = adapter.formatErrorMessage(body) || `Provider returned HTTP ${res.status}.`;
         return {
           ok: false,
           httpStatus: res.status,
           latencyMs,
           errorType,
-          message: body.slice(0, 500) || `Provider returned HTTP ${res.status}.`
+          message: message.slice(0, 500)
         };
       }
 
       const data = await res.json().catch(() => ({}));
-      const content = data.choices?.[0]?.message?.content || '';
+      const transformed = adapter.transformResponse(data, modelConfig, requestBody);
+      const content = transformed.choices?.[0]?.message?.content || '';
       return {
         ok: true,
         httpStatus: res.status,
         latencyMs,
         modelId,
+        format: adapter.format,
         message: 'Connection verified.',
         sample: String(content).slice(0, 120)
       };
@@ -374,6 +396,7 @@ export class OllamaService {
       apiBase: overrides.apiBase || row.api_base,
       apiKey: overrides.apiKey !== undefined ? overrides.apiKey : row.api_key,
       modelId: overrides.modelId || row.model_id,
+      format: overrides.format || row.format || 'openai',
       timeoutMs: overrides.timeoutMs || row.timeout_ms || 15000
     });
   }
@@ -388,7 +411,41 @@ export class OllamaService {
       err.statusCode = 404;
       throw err;
     }
+    invalidatePricingCache(db);
     return { success: true, deleted: modelId };
+  }
+
+  _resolveApplicationId(db, applicationId) {
+    if (!db || !applicationId || typeof applicationId !== 'string') return null;
+    try {
+      const row = db.prepare('SELECT id FROM applications WHERE id = ?').get(applicationId);
+      return row ? row.id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _persistInternalRun(db, fields) {
+    if (!db) return { estimatedCost: null, costStatus: 'unknown' };
+    try {
+      const repo = new UsageRepository(db);
+      const saved = repo.saveEvent({
+        traceId: null,
+        clientModel: fields.clientModel || fields.model,
+        httpStatus: fields.status === 'failure' ? null : 200,
+        tokensEstimated: 0,
+        timestamp: new Date().toISOString(),
+        ...fields,
+        applicationId: this._resolveApplicationId(db, fields.applicationId)
+      });
+      return {
+        estimatedCost: saved?.estimatedCost ?? null,
+        costStatus: saved?.costStatus || 'unknown'
+      };
+    } catch (dbErr) {
+      console.warn('[BENCHMARK] Failed to record internal event:', dbErr.message);
+      return { estimatedCost: null, costStatus: 'unknown' };
+    }
   }
 
   /**
@@ -414,66 +471,41 @@ export class OllamaService {
       ? Number(options.maxTokens)
       : undefined;
     const stream = Boolean(options.stream);
+    const messages = Array.isArray(options.messages) && options.messages.length > 0
+      ? options.messages
+      : [{ role: 'user', content: prompt }];
+    const onDelta = typeof options.onDelta === 'function' ? options.onDelta : null;
+    const applicationId = this._resolveApplicationId(db, options.applicationId);
 
     const start = performance.now();
 
     if (customModel) {
-      // Direct call to custom cloud model
-      const cloudTimeoutMs = Math.max(5000, customModel.timeout_ms || 30000);
-      const url = `${customModel.api_base}/chat/completions`;
-      const headers = { 'Content-Type': 'application/json' };
-      if (customModel.api_key) {
-        headers['Authorization'] = `Bearer ${customModel.api_key}`;
-      }
-
-      const buildBody = () => JSON.stringify({
+      const reqBody = {
         model: customModel.model_id,
-        messages: [{ role: 'user', content: prompt }],
+        messages,
+        stream,
         ...(Number.isFinite(temperature) ? { temperature } : {}),
-        ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { max_tokens: maxTokens } : {}),
-        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {})
+        ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { max_tokens: maxTokens } : {})
+      };
+
+      const result = await executeModelAttempt(db, customModel.model_id, reqBody, {
+        allowRateLimitRetry: true
       });
-
-      let res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: buildBody(),
-        signal: AbortSignal.timeout(cloudTimeoutMs)
-      });
-
-      if (!res.ok && res.status === 429) {
-        const errText = await res.text();
-        const match = errText.match(/try again in ([\d\.]+)s/i);
-        const waitMs = match ? Math.ceil(parseFloat(match[1]) * 1000) + 400 : 3500;
-        if (waitMs <= 7000) {
-          await new Promise(r => setTimeout(r, waitMs));
-          res = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: buildBody(),
-            signal: AbortSignal.timeout(cloudTimeoutMs)
-          });
-        } else {
-          throw new Error(`Cloud provider [${customModel.provider}] rate limit exceeded: ${errText}`);
-        }
-      }
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Cloud provider [${customModel.provider}] returned HTTP ${res.status}: ${errText}`);
+      if (!result.ok) {
+        throw new Error(`Cloud provider [${customModel.provider}] returned HTTP ${result.status || 502}: ${result.message}`);
       }
 
       let content = '';
       let usage = {};
-      if (stream && res.body) {
-        const reader = res.body.getReader();
+      if (result.mode === 'stream' && result.upstreamRes?.body) {
+        const reader = result.upstreamRes.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
+          const lines = buffer.split(/\r?\n/);
           buffer = lines.pop() || '';
           for (const line of lines) {
             const trimmed = line.trim();
@@ -482,41 +514,48 @@ export class OllamaService {
             if (!payload || payload === '[DONE]') continue;
             try {
               const chunk = JSON.parse(payload);
-              content += chunk.choices?.[0]?.delta?.content || '';
+              const deltaText = chunk.choices?.[0]?.delta?.content || '';
+              if (deltaText) {
+                content += deltaText;
+                if (onDelta) onDelta(deltaText);
+              }
               if (chunk.usage) usage = chunk.usage;
             } catch {}
           }
         }
       } else {
-        const data = await res.json();
-        content = data.choices?.[0]?.message?.content || '';
-        usage = data.usage || {};
+        const transformed = result.responseBody || {};
+        content = transformed.choices?.[0]?.message?.content || '';
+        usage = transformed.usage || {};
       }
+
       const duration = Math.round((performance.now() - start) * 10) / 10;
       const cached = usage.prompt_tokens_details?.cached_tokens;
       const cacheStatus = typeof cached === 'number' ? (cached > 0 ? 'cache_hit' : 'standard') : 'unknown';
+      const promptTokens = Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : null;
+      const completionTokens = Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : null;
+      const totalTokens = Number.isFinite(usage.total_tokens)
+        ? usage.total_tokens
+        : (promptTokens !== null && completionTokens !== null ? promptTokens + completionTokens : null);
 
-      // Persist benchmark run to SQLite if db available
-      if (db) {
-        try {
-          const reqId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          db.prepare(`
-            INSERT INTO usage_events (
-              request_id, trace_id, application_id, provider, model, call_type, status,
-              is_streaming, prompt_tokens, completion_tokens, total_tokens, tokens_estimated,
-              estimated_cost, cost_status, latency_ms, prompt_eval_duration_ms, eval_duration_ms,
-              load_duration_ms, cache_status, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-          `).run(
-            reqId, null, 'playground-benchmark', customModel.provider || 'cloud', customModel.model_id,
-            'chat.completion', 'success', stream ? 1 : 0, usage.prompt_tokens || 0, usage.completion_tokens || 0,
-            usage.total_tokens || 0, 0, 0, 'confirmed_by_provider', duration, null, null, null,
-            cacheStatus
-          );
-        } catch (dbErr) {
-          console.warn('[BENCHMARK] Failed to record test event:', dbErr.message);
-        }
-      }
+      const costInfo = this._persistInternalRun(db, {
+        requestId: `test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        applicationId,
+        provider: customModel.provider || 'cloud',
+        model: customModel.model_id,
+        clientModel: modelName || resolvedModel,
+        callType: 'playground.benchmark',
+        status: 'success',
+        isStreaming: stream ? 1 : 0,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        latencyMs: duration,
+        promptEvalDurationMs: null,
+        evalDurationMs: null,
+        loadDurationMs: null,
+        cacheStatus
+      });
 
       return {
         success: true,
@@ -527,18 +566,19 @@ export class OllamaService {
         loadMs: null,
         cacheStatus,
         content,
+        estimatedCost: costInfo.estimatedCost ?? undefined,
         usage: {
-          promptTokens: usage.prompt_tokens || 0,
-          completionTokens: usage.completion_tokens || 0,
-          totalTokens: usage.total_tokens || 0
+          promptTokens: promptTokens || 0,
+          completionTokens: completionTokens || 0,
+          totalTokens: totalTokens || 0
         },
-        tokensPerSec: usage.completion_tokens && duration > 0
-          ? Math.round((usage.completion_tokens / (duration / 1000)) * 10) / 10
+        tokensPerSec: (completionTokens || 0) && duration > 0
+          ? Math.round(((completionTokens || 0) / (duration / 1000)) * 10) / 10
           : 0
       };
     }
 
-    // Direct local Ollama endpoints (tries native /api/chat first to capture nanosecond cache & load timings)
+    // Direct local Ollama endpoints (uses native /api/chat to capture nanosecond cache & load timings even when streaming)
     const ollamaHosts = getOllamaUrls(this.ollamaUrl);
 
     let lastError = null;
@@ -554,7 +594,7 @@ export class OllamaService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: resolvedModel,
-            messages: [{ role: 'user', content: prompt }],
+            messages,
             stream,
             ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {})
           }),
@@ -573,7 +613,11 @@ export class OllamaService {
               if (!trimmed) return;
               try {
                 const chunk = JSON.parse(trimmed);
-                content += chunk.message?.content || '';
+                const deltaText = chunk.message?.content || '';
+                if (deltaText) {
+                  content += deltaText;
+                  if (onDelta) onDelta(deltaText);
+                }
                 if (chunk.done) data = chunk;
               } catch {}
             };
@@ -611,26 +655,24 @@ export class OllamaService {
             ? Math.round((completionTokens / (denomMs / 1000)) * 10) / 10
             : 0;
 
-          if (db) {
-            try {
-              const reqId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-              db.prepare(`
-                INSERT INTO usage_events (
-                  request_id, trace_id, application_id, provider, model, call_type, status,
-                  is_streaming, prompt_tokens, completion_tokens, total_tokens, tokens_estimated,
-                  estimated_cost, cost_status, latency_ms, prompt_eval_duration_ms, eval_duration_ms,
-                  load_duration_ms, cache_status, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-              `).run(
-                reqId, null, null, 'ollama', resolvedModel,
-                'chat.completion', 'success', stream ? 1 : 0, promptTokens, completionTokens,
-                totalTokens, 0, 0, 'confirmed_by_provider', duration, promptEvalMs, evalMs,
-                loadMs, cacheStatus
-              );
-            } catch (dbErr) {
-              console.warn('[BENCHMARK] Failed to record test event:', dbErr.message);
-            }
-          }
+          const costInfo = this._persistInternalRun(db, {
+            requestId: `test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            applicationId,
+            provider: 'ollama',
+            model: `ollama/${resolvedModel}`,
+            clientModel: modelName || resolvedModel,
+            callType: 'playground.benchmark',
+            status: 'success',
+            isStreaming: stream ? 1 : 0,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            latencyMs: duration,
+            promptEvalDurationMs: promptEvalMs,
+            evalDurationMs: evalMs,
+            loadDurationMs: loadMs,
+            cacheStatus
+          });
 
           return {
             success: true,
@@ -641,6 +683,7 @@ export class OllamaService {
             loadMs,
             cacheStatus,
             content,
+            estimatedCost: costInfo.estimatedCost ?? undefined,
             usage: {
               promptTokens,
               completionTokens,
@@ -684,36 +727,39 @@ export class OllamaService {
     }
 
     if (customModel) {
-      const url = `${customModel.api_base}/chat/completions`;
-      const headers = { 'Content-Type': 'application/json' };
-      if (customModel.api_key) headers['Authorization'] = `Bearer ${customModel.api_key}`;
+      const adapter = getAdapter(customModel.format);
+      const url = joinEndpoint(customModel.api_base, adapter.getEndpointPath(customModel));
+      const headers = adapter.buildHeaders(customModel.api_key, customModel);
 
+      const requestBody = {
+        model: customModel.model_id,
+        messages: [{ role: 'user', content: prompt }],
+        temperature
+      };
       const res = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: customModel.model_id,
-          messages: [{ role: 'user', content: prompt }],
-          temperature
-        }),
+        body: JSON.stringify(adapter.buildRequestBody(requestBody, customModel)),
         signal: AbortSignal.timeout(Math.max(5000, customModel.timeout_ms || 30000))
       });
 
       const duration = Math.round((performance.now() - start) * 10) / 10;
       if (!res.ok) {
         const errText = await res.text();
-        throw new Error(`Cloud model request failed (${res.status}): ${errText}`);
+        throw new Error(`Cloud model request failed (${res.status}): ${adapter.formatErrorMessage(errText)}`);
       }
       const data = await res.json();
-      const content = data.choices?.[0]?.message?.content || '';
-      const promptTokens = data.usage?.prompt_tokens || 0;
-      const completionTokens = data.usage?.completion_tokens || 0;
+      const transformed = adapter.transformResponse(data, customModel, requestBody);
+      const content = transformed.choices?.[0]?.message?.content || '';
+      const promptTokens = transformed.usage?.prompt_tokens || 0;
+      const completionTokens = transformed.usage?.completion_tokens || 0;
       const tokensPerSec = completionTokens && duration > 0 ? Math.round((completionTokens / (duration / 1000)) * 10) / 10 : 0;
 
       return {
         success: true,
         model: resolvedModel,
         isCloud: true,
+        format: adapter.format,
         latencyMs: duration,
         loadMs: 0,
         promptEvalMs: null,
@@ -769,26 +815,24 @@ export class OllamaService {
             ? Math.round((completionTokens / (denomMs / 1000)) * 10) / 10
             : 0;
 
-          if (db) {
-            try {
-              const reqId = `profile-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-              db.prepare(`
-                INSERT INTO usage_events (
-                  request_id, trace_id, application_id, provider, model, call_type, status,
-                  is_streaming, prompt_tokens, completion_tokens, total_tokens, tokens_estimated,
-                  estimated_cost, cost_status, latency_ms, prompt_eval_duration_ms, eval_duration_ms,
-                  load_duration_ms, cache_status, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-              `).run(
-                reqId, null, null, 'ollama', resolvedModel,
-                'chat.completion', 'success', 0, promptTokens, completionTokens,
-                totalTokens, 0, 0, 'confirmed_by_provider', duration, promptEvalMs, evalMs,
-                loadMs, loadMs > 800 ? 'cold_load' : 'resident'
-              );
-            } catch (dbErr) {
-              console.warn('[PROFILER] Failed to record profile event:', dbErr.message);
-            }
-          }
+          this._persistInternalRun(db, {
+            requestId: `profile-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            applicationId: null,
+            provider: 'ollama',
+            model: `ollama/${resolvedModel}`,
+            clientModel: modelName || resolvedModel,
+            callType: 'latency.profile',
+            status: 'success',
+            isStreaming: 0,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            latencyMs: duration,
+            promptEvalDurationMs: promptEvalMs,
+            evalDurationMs: evalMs,
+            loadDurationMs: loadMs,
+            cacheStatus: loadMs > 800 ? 'cold_load' : 'resident'
+          });
 
           return {
             success: true,

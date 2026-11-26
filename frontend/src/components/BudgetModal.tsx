@@ -9,6 +9,7 @@ import {
 } from '../types/analytics';
 import { createBudget, updateBudget } from '../api/client';
 import { CloseIcon, AlertTriangleIcon } from './icons/Icons';
+import { InfoTip } from './InfoTip';
 
 interface BudgetModalProps {
   isOpen: boolean;
@@ -153,7 +154,13 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({
               </label>
 
               <label className="mp-form-field">
-                <span>Scope</span>
+                <span className="mp-label-with-tip">
+                  <span>Scope</span>
+                  <InfoTip
+                    title="Budget Scope"
+                    text="All applications applies the cap across all gateway traffic combined. Application or Model restricts the cap to one specific app or model."
+                  />
+                </span>
                 <select className="mp-select" value={scopeType} onChange={(event) => setScopeType(event.target.value as BudgetScope)}>
                   <option value="global">All applications</option>
                   <option value="application">Application</option>
@@ -230,7 +237,13 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({
               </label>
 
               <label className="mp-form-field">
-                <span>When exceeded</span>
+                <span className="mp-label-with-tip">
+                  <span>When exceeded</span>
+                  <InfoTip
+                    title="Notify vs Hard Block"
+                    text="Notify only records an alert in Costs & Alerts and fires your webhook. Block gateway requests (HTTP 429) stops matching requests until the next UTC period."
+                  />
+                </span>
                 <select className="mp-select" value={action} onChange={(event) => setAction(event.target.value as BudgetAction)}>
                   <option value="notify">Notify only</option>
                   <option value="block">Block gateway requests (429)</option>

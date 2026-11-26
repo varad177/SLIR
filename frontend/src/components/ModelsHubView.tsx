@@ -9,6 +9,7 @@ import {
 } from '../api/client';
 import { AddCloudModelModal } from './AddCloudModelModal';
 import { ConfirmModal } from './ConfirmModal';
+import { InfoTip } from './InfoTip';
 import {
   SearchIcon,
   CheckIcon,
@@ -196,7 +197,13 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
 
       <section className="mp-global-model-card">
         <div className="mp-global-model-copy">
-          <div className="mp-eyebrow">Global fallback</div>
+          <div className="mp-eyebrow mp-label-with-tip">
+            <span>Global fallback</span>
+            <InfoTip
+              title="What is the Global Fallback?"
+              text="The default model shared by all applications configured to use 'active-model' (Follow global). Switching this instantly updates every unpinned app without changing any app code."
+            />
+          </div>
           <div className="mp-global-model-name font-mono">{globalModel}</div>
           <p>
             {isCloud
@@ -206,8 +213,18 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                 : 'This model was not found in the current provider list. Requests may fail until it is available.'}
           </p>
           <div className="mp-global-model-meta font-mono">
-            <span>{applications.filter(a => a.defaultModel === 'active-model').length} {applications.filter(a => a.defaultModel === 'active-model').length === 1 ? 'app follows' : 'apps follow'} this</span>
-            <span>{applications.filter(a => a.defaultModel !== 'active-model').length} {applications.filter(a => a.defaultModel !== 'active-model').length === 1 ? 'app' : 'apps'} pinned</span>
+            <InfoTip
+              title="Apps following global"
+              text="Applications set to 'active-model' that automatically switch whenever you change the Global Fallback."
+            >
+              <span>{applications.filter(a => a.defaultModel === 'active-model').length} {applications.filter(a => a.defaultModel === 'active-model').length === 1 ? 'app follows' : 'apps follow'} this</span>
+            </InfoTip>
+            <InfoTip
+              title="Pinned applications"
+              text="Applications locked to a specific model. They ignore Global Fallback changes until you set them back to 'Follow global'."
+            >
+              <span>{applications.filter(a => a.defaultModel !== 'active-model').length} {applications.filter(a => a.defaultModel !== 'active-model').length === 1 ? 'app' : 'apps'} pinned</span>
+            </InfoTip>
           </div>
         </div>
 
@@ -253,7 +270,15 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                   <th>Model</th>
                   <th>Architecture</th>
                   <th>Size</th>
-                  <th>Routing</th>
+                  <th>
+                    <span className="mp-label-with-tip">
+                      <span>Routing</span>
+                      <InfoTip
+                        title="Model Routing Badges"
+                        text="Global = shared default for unpinned apps. Pinned = number of apps explicitly locked to this model. Available = ready to use directly or in failover chains."
+                      />
+                    </span>
+                  </th>
                   <th className="align-right">Action</th>
                 </tr>
               </thead>
@@ -338,8 +363,24 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                   <th>Model</th>
                   <th>Endpoint</th>
                   <th>Auth</th>
-                  <th>Limits</th>
-                  <th>Routing</th>
+                  <th>
+                    <span className="mp-label-with-tip">
+                      <span>Limits</span>
+                      <InfoTip
+                        title="Context & Token Rates"
+                        text="Shows maximum context window (in tokens) and configured input / output pricing per 1 million tokens."
+                      />
+                    </span>
+                  </th>
+                  <th>
+                    <span className="mp-label-with-tip">
+                      <span>Routing</span>
+                      <InfoTip
+                        title="Model Routing Badges"
+                        text="Global = shared default for unpinned apps. Pinned = number of apps explicitly locked to this model."
+                      />
+                    </span>
+                  </th>
                   <th className="align-right">Actions</th>
                 </tr>
               </thead>
@@ -349,7 +390,7 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                     <td colSpan={6}>
                       <div className="mp-empty compact">
                         <strong>No cloud endpoints yet</strong>
-                        <span>Connect Groq, OpenAI, DeepSeek, OpenRouter, LM Studio, or vLLM.</span>
+                        <span>Connect Groq, OpenAI, Anthropic, DeepSeek, OpenRouter, LM Studio, or vLLM.</span>
                       </div>
                     </td>
                   </tr>
@@ -364,7 +405,9 @@ export const ModelsHubView: React.FC<ModelsHubViewProps> = ({
                           <span className={`mp-status-dot cloud ${isGlobal ? '' : 'muted'}`} />
                           <div>
                             <strong>{model.displayName || model.modelId}</strong>
-                            <small className="font-mono">{model.provider} · {model.modelId}</small>
+                            <small className="font-mono">
+                              {model.provider} · {model.format === 'anthropic' ? 'Messages API · ' : ''}{model.modelId}
+                            </small>
                             {healthFor(model.modelId) && (
                               <div
                                 className={`mp-test-pill ${healthClass(healthFor(model.modelId)!.status)}`}

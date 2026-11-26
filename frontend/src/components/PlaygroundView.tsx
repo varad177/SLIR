@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { TestPromptResult, ApplicationItem } from '../types/analytics';
-import { runTestPromptBenchmark } from '../api/client';
+import { runTestPromptBenchmark, streamTestPromptBenchmark } from '../api/client';
 import { copyText } from '../utils/clipboard';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
@@ -9,6 +9,7 @@ import {
   PlayIcon,
   RotateCwIcon
 } from './icons/Icons';
+import { InfoTip } from './InfoTip';
 
 interface PlaygroundViewProps {
   installedModels?: string[];
@@ -53,8 +54,17 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
   onBenchmarkComplete
 }) => {
   const [mode, setMode] = useState<'single' | 'compare'>('compare');
+  const [selectedAppId, setSelectedAppId] = useState<string>('');
   const [modelA, setModelA] = useState<string>('active-model');
   const [modelB, setModelB] = useState<string>(installedModels.find(m => m.includes('groq') || m.includes('llama') || m !== 'active-model') || 'qwen2.5:3b');
+
+  useEffect(() => {
+    if (!installedModels.length) return;
+    if (!installedModels.includes(modelB)) {
+      const candidate = installedModels.find((m) => m !== 'active-model') || installedModels[0];
+      if (candidate) setModelB(candidate);
+    }
+  }, [installedModels, modelB]);
   const [systemContext, setSystemContext] = useState<string>(PRESETS[0].system);
   const [userPrompt, setUserPrompt] = useState<string>(PRESETS[0].prompt);
   const [temperature, setTemperature] = useState<number>(0.2);
@@ -81,34 +91,84 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
     if (!userPrompt.trim() || running) return;
     setRunning(true);
     setError(null);
-    try {
-      const fullPrompt = systemContext ? `System: ${systemContext}\n\nUser: ${userPrompt}` : userPrompt;
-      const inferenceOptions = { temperature, maxTokens, stream: isStreamOn };
+    const messages = [
+      ...(systemContext.trim() ? [{ role: 'system', content: systemContext }] : []),
+      { role: 'user', content: userPrompt }
+    ];
+    const appId = selectedAppId || null;
 
+    const runTarget = async (
+      targetModel: string,
+      setTargetResult: React.Dispatch<React.SetStateAction<TestPromptResult | null>>
+    ) => {
+      if (isStreamOn) {
+        setTargetResult({
+          success: true,
+          model: targetModel,
+          latencyMs: 0,
+          content: '',
+          usage: { promptTokens: totalTokens, completionTokens: 0, totalTokens },
+          tokensPerSec: 0
+        });
+        const finalRes = await streamTestPromptBenchmark(targetModel, {
+          messages,
+          applicationId: appId,
+          temperature,
+          maxTokens,
+          onDelta: (delta) => {
+            setTargetResult((prev) => ({
+              ...(prev || {
+                success: true,
+                model: targetModel,
+                latencyMs: 0,
+                content: '',
+                usage: { promptTokens: totalTokens, completionTokens: 0, totalTokens },
+                tokensPerSec: 0
+              }),
+              content: (prev?.content || '') + delta
+            }));
+          }
+        });
+        setTargetResult(finalRes);
+        return;
+      }
+
+      const res = await runTestPromptBenchmark(targetModel, userPrompt, {
+        messages,
+        applicationId: appId,
+        temperature,
+        maxTokens,
+        stream: false
+      });
+      setTargetResult(res);
+    };
+
+    try {
       if (mode === 'single') {
-        const res = await runTestPromptBenchmark(modelA, fullPrompt, inferenceOptions);
-        setResultA(res);
+        await runTarget(modelA, setResultA);
       } else {
-        const [resA, resB] = await Promise.all([
-          runTestPromptBenchmark(modelA, fullPrompt, inferenceOptions).catch(err => ({
-            success: false,
-            model: modelA,
-            content: `Inference failed: ${err.message}`,
-            latencyMs: 0,
-            tokensPerSec: 0,
-            usage: { promptTokens: totalTokens, completionTokens: 0, totalTokens }
-          } as TestPromptResult)),
-          runTestPromptBenchmark(modelB, fullPrompt, inferenceOptions).catch(err => ({
-            success: false,
-            model: modelB,
-            content: `Inference failed: ${err.message}`,
-            latencyMs: 0,
-            tokensPerSec: 0,
-            usage: { promptTokens: totalTokens, completionTokens: 0, totalTokens }
-          } as TestPromptResult))
+        await Promise.all([
+          runTarget(modelA, setResultA).catch((err) => {
+            setResultA({
+              success: false,
+              model: modelA,
+              content: `Inference failed: ${err.message}`,
+              latencyMs: 0,
+              tokensPerSec: 0,
+              usage: { promptTokens: totalTokens, completionTokens: 0, totalTokens }
+            });
+          }),
+          runTarget(modelB, setResultB).catch((err) => {
+            setResultB({
+              success: false,
+              model: modelB,
+              content: `Inference failed: ${err.message}`,
+              latencyMs: 0,
+              tokensPerSec: 0,
+              usage: { promptTokens: totalTokens, completionTokens: 0, totalTokens }
+            });
+          })
         ]);
-        setResultA(resA);
-        setResultB(resB);
       }
 
       if (onBenchmarkComplete) onBenchmarkComplete();
@@ -216,6 +276,23 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
 
         {/* Sliders & Toggles */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }} className="font-mono">
+          {applications.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6875rem' }}>
+              <span style={{ color: 'var(--mp-text-muted)' }}>APP</span>
+              <select
+                value={selectedAppId}
+                onChange={(e) => setSelectedAppId(e.target.value)}
+                className="mp-select font-mono"
+                style={{ fontSize: '0.6875rem', padding: '2px 6px', maxWidth: '150px' }}
+              >
+                <option value="">Unattributed</option>
+                {applications.map((app) => (
+                  <option key={app.id} value={app.id}>{app.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6875rem' }}>
             <span style={{ color: 'var(--mp-text-muted)' }}>TEMP</span>
             <input
@@ -242,25 +319,30 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
             />
           </div>
 
-          <button
-            onClick={() => setIsStreamOn(!isStreamOn)}
-            style={{
-              background: isStreamOn ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
-              border: `1px solid ${isStreamOn ? 'rgba(16, 185, 129, 0.3)' : 'var(--mp-border)'}`,
-              color: isStreamOn ? 'var(--mp-green)' : 'var(--mp-text-muted)',
-              padding: '2px 7px',
-              borderRadius: '4px',
-              fontSize: '0.6875rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}
+          <InfoTip
+            title="Streaming Mode (SSE)"
+            text="ON streams tokens live as they are generated. OFF waits for the full reply and captures detailed Ollama load & eval timings."
           >
-            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: isStreamOn ? 'var(--mp-green)' : 'var(--mp-text-muted)' }} />
-            STREAM REQUEST {isStreamOn ? 'ON' : 'OFF'}
-          </button>
+            <button
+              onClick={() => setIsStreamOn(!isStreamOn)}
+              style={{
+                background: isStreamOn ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                border: `1px solid ${isStreamOn ? 'rgba(16, 185, 129, 0.3)' : 'var(--mp-border)'}`,
+                color: isStreamOn ? 'var(--mp-green)' : 'var(--mp-text-muted)',
+                padding: '2px 7px',
+                borderRadius: '4px',
+                fontSize: '0.6875rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+            >
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: isStreamOn ? 'var(--mp-green)' : 'var(--mp-text-muted)' }} />
+              STREAM REQUEST {isStreamOn ? 'ON' : 'OFF'}
+            </button>
+          </InfoTip>
 
           <span style={{ fontSize: '0.625rem', color: 'var(--mp-green)' }}>
             Prompts stay in memory
@@ -452,11 +534,21 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: 'var(--mp-text-muted)', flexWrap: 'wrap', gap: '6px' }} className="font-mono">
-                    <span>COLD: <strong style={{ color: resultA?.loadMs && resultA.loadMs > 1000 ? 'var(--mp-red)' : 'var(--mp-text-primary)' }}>{resultA ? (resultA.loadMs ? `${(resultA.loadMs / 1000).toFixed(1)}s` : '0ms') : '--'}</strong></span>
-                    <span>KV: <strong style={{ color: 'var(--mp-cyan)' }}>{resultA?.promptEvalMs ? `${Math.round(resultA.promptEvalMs)}ms` : '--'}</strong></span>
-                    <span>GEN: <strong style={{ color: 'var(--mp-green)' }}>{resultA?.evalMs ? `${Math.round(resultA.evalMs)}ms` : '--'}</strong></span>
-                    <span>SPEED: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultA?.tokensPerSec ? `${Math.round(resultA.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
-                    <span>TOTAL: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultA?.latencyMs ? (resultA.latencyMs >= 1000 ? `${(resultA.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultA.latencyMs)}ms`) : '--'}</strong></span>
+                    <InfoTip title="COLD (Load Time)" text="Time spent loading model weights into GPU/RAM (0ms when already warm in memory).">
+                      <span>COLD: <strong style={{ color: resultA?.loadMs && resultA.loadMs > 1000 ? 'var(--mp-red)' : 'var(--mp-text-primary)' }}>{resultA ? (resultA.loadMs ? `${(resultA.loadMs / 1000).toFixed(1)}s` : '0ms') : '--'}</strong></span>
+                    </InfoTip>
+                    <InfoTip title="KV (Prompt Evaluation)" text="Time to process your input prompt and build the KV cache before the first token arrives.">
+                      <span>KV: <strong style={{ color: 'var(--mp-cyan)' }}>{resultA?.promptEvalMs ? `${Math.round(resultA.promptEvalMs)}ms` : '--'}</strong></span>
+                    </InfoTip>
+                    <InfoTip title="GEN (Generation)" text="Time spent generating the reply tokens.">
+                      <span>GEN: <strong style={{ color: 'var(--mp-green)' }}>{resultA?.evalMs ? `${Math.round(resultA.evalMs)}ms` : '--'}</strong></span>
+                    </InfoTip>
+                    <InfoTip title="SPEED" text="Output token generation throughput in tokens per second (t/s).">
+                      <span>SPEED: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultA?.tokensPerSec ? `${Math.round(resultA.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
+                    </InfoTip>
+                    <InfoTip title="TOTAL" text="End-to-end request time from start to finish.">
+                      <span>TOTAL: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultA?.latencyMs ? (resultA.latencyMs >= 1000 ? `${(resultA.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultA.latencyMs)}ms`) : '--'}</strong></span>
+                    </InfoTip>
                   </div>
                 </div>
 
@@ -501,7 +593,8 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                           className="mp-select font-mono"
                           style={{ fontSize: '0.75rem', padding: '2px 6px', fontWeight: 700 }}
                         >
-                          {installedModels.map(m => (
+                          <option value="active-model">active-model (Current Target)</option>
+                          {installedModels.filter(m => m !== 'active-model').map(m => (
                             <option key={m} value={m}>{m}</option>
                           ))}
                         </select>
@@ -512,11 +605,21 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.625rem', color: 'var(--mp-text-muted)', flexWrap: 'wrap', gap: '6px' }} className="font-mono">
-                      <span>COLD: <strong style={{ color: resultB?.loadMs && resultB.loadMs > 1000 ? 'var(--mp-red)' : 'var(--mp-text-primary)' }}>{resultB ? (resultB.loadMs ? `${(resultB.loadMs / 1000).toFixed(1)}s` : '0ms') : '--'}</strong></span>
-                      <span>KV: <strong style={{ color: 'var(--mp-cyan)' }}>{resultB?.promptEvalMs ? `${Math.round(resultB.promptEvalMs)}ms` : '--'}</strong></span>
-                      <span>GEN: <strong style={{ color: 'var(--mp-green)' }}>{resultB?.evalMs ? `${Math.round(resultB.evalMs)}ms` : '--'}</strong></span>
-                      <span>SPEED: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultB?.tokensPerSec ? `${Math.round(resultB.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
-                      <span>TOTAL: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultB?.latencyMs ? (resultB.latencyMs >= 1000 ? `${(resultB.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultB.latencyMs)}ms`) : '--'}</strong></span>
+                      <InfoTip title="COLD (Load Time)" text="Time spent loading model weights into GPU/RAM (0ms when already warm in memory).">
+                        <span>COLD: <strong style={{ color: resultB?.loadMs && resultB.loadMs > 1000 ? 'var(--mp-red)' : 'var(--mp-text-primary)' }}>{resultB ? (resultB.loadMs ? `${(resultB.loadMs / 1000).toFixed(1)}s` : '0ms') : '--'}</strong></span>
+                      </InfoTip>
+                      <InfoTip title="KV (Prompt Evaluation)" text="Time to process your input prompt and build the KV cache before the first token arrives.">
+                        <span>KV: <strong style={{ color: 'var(--mp-cyan)' }}>{resultB?.promptEvalMs ? `${Math.round(resultB.promptEvalMs)}ms` : '--'}</strong></span>
+                      </InfoTip>
+                      <InfoTip title="GEN (Generation)" text="Time spent generating the reply tokens.">
+                        <span>GEN: <strong style={{ color: 'var(--mp-green)' }}>{resultB?.evalMs ? `${Math.round(resultB.evalMs)}ms` : '--'}</strong></span>
+                      </InfoTip>
+                      <InfoTip title="SPEED" text="Output token generation throughput in tokens per second (t/s).">
+                        <span>SPEED: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultB?.tokensPerSec ? `${Math.round(resultB.tokensPerSec * 10) / 10} t/s` : '--'}</strong></span>
+                      </InfoTip>
+                      <InfoTip title="TOTAL" text="End-to-end request time from start to finish.">
+                        <span>TOTAL: <strong style={{ color: 'var(--mp-text-primary)' }}>{resultB?.latencyMs ? (resultB.latencyMs >= 1000 ? `${(resultB.latencyMs / 1000).toFixed(1)}s` : `${Math.round(resultB.latencyMs)}ms`) : '--'}</strong></span>
+                      </InfoTip>
                     </div>
                   </div>
 

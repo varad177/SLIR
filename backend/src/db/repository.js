@@ -1,4 +1,5 @@
 import { calculateEventCost } from './pricingEngine.js';
+import { clearBudgetCaches } from '../services/budgetService.js';
 
 /**
  * Usage Events Repository
@@ -79,6 +80,10 @@ export class UsageRepository {
 
     const res = this.insertStmt.run(enrichedEvent);
     const inserted = res.changes > 0;
+
+    if (inserted && enrichedEvent.applicationId) {
+      clearBudgetCaches();
+    }
 
     return {
       inserted,

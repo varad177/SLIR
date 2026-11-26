@@ -40,29 +40,17 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
   return (
     <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 9999,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(0, 0, 0, 0.75)',
-        backdropFilter: 'blur(6px)',
-        padding: '16px'
-      }}
+      className="mp-modal-backdrop"
+      style={{ zIndex: 9999 }}
       onClick={(e) => {
         if (e.target === e.currentTarget && !loading) onClose();
       }}
     >
       <div
+        className="mp-modal"
         style={{
           width: '100%',
           maxWidth: '460px',
-          background: 'var(--mp-bg-card)',
-          border: '1px solid var(--mp-border)',
-          borderRadius: '10px',
-          boxShadow: '0 20px 40px -15px rgba(0, 0, 0, 0.8), 0 0 20px rgba(244, 63, 94, 0.08)',
           overflow: 'hidden'
         }}
       >
@@ -74,7 +62,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             justifyContent: 'space-between',
             padding: '16px 20px',
             borderBottom: '1px solid var(--mp-border-subtle)',
-            background: 'rgba(18, 21, 30, 0.9)'
+            background: 'var(--mp-bg-subtle)'
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -146,7 +134,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
             gap: '10px',
             padding: '14px 20px',
             borderTop: '1px solid var(--mp-border-subtle)',
-            background: 'rgba(15, 18, 25, 0.8)'
+            background: 'var(--mp-bg-subtle)'
           }}
         >
           <button

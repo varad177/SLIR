@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RequestsResponse, ApplicationItem, UsageEventItem, FailoverTraceEntry } from '../types/analytics';
+import { RequestsResponse, ApplicationItem, UsageEventItem } from '../types/analytics';
 import { fetchRequests } from '../api/client';
 import { copyText } from '../utils/clipboard';
+import { failoverReasonLabel, hasFailoverActivity, parseFailoverTrace } from '../utils/failover';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   ShieldCheckIcon,
@@ -11,11 +12,16 @@ import {
   CloseIcon,
   RotateCwIcon
 } from './icons/Icons';
+import { InfoTip } from './InfoTip';
+import { FailoverTraceList } from './FailoverTraceList';
 
 interface RequestLogsViewProps {
   applications?: ApplicationItem[];
   installedModels?: string[];
   initialAppId?: string | null;
+  initialFailoverFilter?: 'all' | 'only' | 'used' | 'failed' | 'none';
+  initialSearch?: string;
+  initialFocusNonce?: number;
   onClearDatabase?: () => void;
   onReplayInPlayground?: () => void;
 }
@@ -47,34 +53,13 @@ const formatLatency = (ms: number) => ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` 
 const formatBreakdown = (ms: number | null | undefined) => ms != null ? `${(ms / 1000).toFixed(2)}s` : 'n/a';
 const statusLabel = (item: UsageEventItem) => item.http_status ? String(item.http_status) : (item.status === 'success' ? '200' : 'error');
 
-const parseFailoverTrace = (value?: string | null): FailoverTraceEntry[] => {
-  try {
-    const parsed = JSON.parse(value || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-
-const FAILOVER_REASON_LABELS: Record<string, string> = {
-  rate_limit: 'Rate limit',
-  timeout: 'Timeout',
-  network_error: 'Network error',
-  upstream_5xx: 'Provider 5xx',
-  upstream_error: 'Provider error',
-  invalid_response: 'Invalid response',
-  budget_exceeded: 'Budget blocked',
-  circuit_open: 'Circuit open',
-  success: 'Success',
-  stream_started: 'Stream started'
-};
-
-const failoverReasonLabel = (value?: string | null) => FAILOVER_REASON_LABELS[value || ''] || value || 'Unknown';
-
 export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   applications = [],
   installedModels = [],
   initialAppId = null,
+  initialFailoverFilter = 'all',
+  initialSearch = '',
+  initialFocusNonce = 0,
   onReplayInPlayground
 }) => {
   const [data, setData] = useState<RequestsResponse | null>(null);
@@ -83,8 +68,9 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   const [selectedModel, setSelectedModel] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [selectedStreaming, setSelectedStreaming] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedFailover, setSelectedFailover] = useState<string>(initialFailoverFilter || 'all');
+  const [searchQuery, setSearchQuery] = useState(initialSearch || '');
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch || '');
   const [activeTimeframe, setActiveTimeframe] = useState<'1h' | '24h' | '7d'>('24h');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [selectedItem, setSelectedItem] = useState<UsageEventItem | null>(null);
@@ -93,8 +79,17 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
-    if (initialAppId) setSelectedApp(initialAppId);
+    setSelectedApp(initialAppId || 'all');
+    setPage(1);
   }, [initialAppId]);
+
+  useEffect(() => {
+    if (!initialFocusNonce) return;
+    setSelectedFailover(initialFailoverFilter || 'all');
+    setSearchQuery(initialSearch || '');
+    setDebouncedSearch(initialSearch || '');
+    setPage(1);
+  }, [initialFailoverFilter, initialSearch, initialFocusNonce]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
@@ -110,16 +105,23 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
     model: selectedModel !== 'all' ? selectedModel : undefined,
     status: selectedStatus !== 'all' ? selectedStatus : undefined,
     streaming: selectedStreaming !== 'all' ? selectedStreaming : undefined,
+    failover: selectedFailover !== 'all' ? selectedFailover : undefined,
     start: timeframeStart(activeTimeframe),
     search: debouncedSearch || undefined
-  }), [selectedApp, selectedModel, selectedStatus, selectedStreaming, activeTimeframe, debouncedSearch]);
+  }), [selectedApp, selectedModel, selectedStatus, selectedStreaming, selectedFailover, activeTimeframe, debouncedSearch]);
 
   const loadRequests = useCallback(async (showSpinner = false) => {
     if (showSpinner) setLoading(true);
     try {
       const res = await fetchRequests({ ...queryFilters(), page });
       setData(res);
-      setSelectedItem((prev) => prev || res.items?.[0] || null);
+      setSelectedItem((prev) => {
+        const itemsList = res.items || [];
+        if (prev && itemsList.some((item) => item.id === prev.id)) {
+          return itemsList.find((item) => item.id === prev.id) || prev;
+        }
+        return itemsList[0] || null;
+      });
     } catch (err) {
       console.error('Failed to load request logs:', err);
     } finally {
@@ -241,7 +243,7 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search request id, model, or error"
+              placeholder="Search request id, model, error, or trace"
               aria-label="Search request logs"
             />
           </div>
@@ -268,6 +270,17 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
               <option value="all">Any status</option>
               <option value="success">Success</option>
               <option value="failure">Failure</option>
+            </select>
+          </label>
+
+          <label className="mp-inline-field">
+            <span>Routing</span>
+            <select className="mp-select mp-select-compact" value={selectedFailover} onChange={(e) => resetPageAnd(setSelectedFailover, e.target.value)}>
+              <option value="all">All routing</option>
+              <option value="only">Failover triggered</option>
+              <option value="used">Failover succeeded</option>
+              <option value="failed">Failover failed</option>
+              <option value="none">No failover</option>
             </select>
           </label>
 
@@ -367,15 +380,19 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                       <td>
                         <div className="mp-table-primary font-mono">
                           {item.model}
-                          {item.failover_from_model && (
+                          {hasFailoverActivity(item) && (
                             <span className={`mp-failover-badge ${item.failover_used ? 'used' : 'failed'}`}>
                               {item.failover_used ? 'Failover' : 'Failover failed'}
                             </span>
                           )}
                         </div>
                         <div className="mp-table-secondary font-mono">{item.provider}</div>
-                        {item.failover_from_model && (
-                          <div className="mp-table-secondary font-mono">from {item.failover_from_model}</div>
+                        {hasFailoverActivity(item) && (
+                          <div className="mp-table-secondary font-mono">
+                            from {item.failover_from_model || 'primary'}
+                            {item.failover_reason ? ` · ${failoverReasonLabel(item.failover_reason)}` : ''}
+                            {(item.failover_attempts || 0) > 0 ? ` · ${item.failover_attempts} fallback(s)` : ''}
+                          </div>
                         )}
                       </td>
                       <td>
@@ -386,9 +403,15 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                       <td className="font-mono">
                         <div>{formatLatency(item.latency_ms)}</div>
                         <div className="mp-table-secondary" style={{ display: 'flex', gap: '10px', fontSize: '0.6875rem', fontVariantNumeric: 'tabular-nums' }}>
-                          <span title="Model load">L:{formatBreakdown(item.load_duration_ms)}</span>
-                          <span title="Prompt eval">PE:{formatBreakdown(item.prompt_eval_duration_ms)}</span>
-                          <span title="Generation">G:{formatBreakdown(item.eval_duration_ms)}</span>
+                          <InfoTip title="L — Model Load Time" text="Time spent loading model weights into GPU/RAM. High on cold starts, ~0ms when already in memory.">
+                            <span>L:{formatBreakdown(item.load_duration_ms)}</span>
+                          </InfoTip>
+                          <InfoTip title="PE — Prompt Eval Time" text="Time spent reading and processing your input prompt before the first output token (Time to First Token).">
+                            <span>PE:{formatBreakdown(item.prompt_eval_duration_ms)}</span>
+                          </InfoTip>
+                          <InfoTip title="G — Generation Time" text="Time spent generating output tokens.">
+                            <span>G:{formatBreakdown(item.eval_duration_ms)}</span>
+                          </InfoTip>
                         </div>
                         {item.cache_status === 'cache_hit' && <div className="mp-table-secondary">cache hit</div>}
                         {item.is_streaming === 1 && <div className="mp-table-secondary">streamed</div>}
@@ -444,44 +467,66 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
               <div><span>Application</span><strong>{current.application_name || current.application_id || 'Direct client'}</strong></div>
               <div><span>Trace ID</span><strong className="font-mono" title={current.trace_id || undefined}>{current.trace_id || '—'}</strong></div>
               <div><span>Provider</span><strong>{current.provider}</strong></div>
-              <div><span>Routed model</span><strong className="font-mono">{current.model}</strong></div>
-              <div><span>Requested model</span><strong className="font-mono">{current.client_model || 'active-model'}</strong></div>
+              <div>
+                <span className="mp-label-with-tip">
+                  <span>Routed model</span>
+                  <InfoTip
+                    title="Routed Model"
+                    text="The actual local or cloud model that answered this request after resolving app pinning, Global Fallback, or Failover."
+                  />
+                </span>
+                <strong className="font-mono">{current.model}</strong>
+              </div>
+              <div>
+                <span className="mp-label-with-tip">
+                  <span>Requested model</span>
+                  <InfoTip
+                    title="Requested Model"
+                    text="The exact model value the client sent (for example 'active-model' before SLIR resolved it)."
+                  />
+                </span>
+                <strong className="font-mono">{current.client_model || 'active-model'}</strong>
+              </div>
               <div><span>Call type</span><strong className="font-mono">{current.call_type}</strong></div>
               <div><span>Streaming</span><strong>{current.is_streaming ? 'Yes' : 'No'}</strong></div>
-              <div><span>Cache state</span><strong>{current.cache_status || 'unknown'}</strong></div>
-              <div><span>Cost</span><strong className="font-mono">{current.estimated_cost != null ? `$${current.estimated_cost.toFixed(6)}` : 'Not priced'} <span className="mp-muted">({current.cost_status})</span></strong></div>
+              <div>
+                <span className="mp-label-with-tip">
+                  <span>Cache state</span>
+                  <InfoTip
+                    title="Prompt Cache Status"
+                    text="cache_hit = reused cached KV prefix; standard = evaluated full prompt; cold_cache = slow initial evaluation; unknown = provider did not report cache data."
+                  />
+                </span>
+                <strong>{current.cache_status || 'unknown'}</strong>
+              </div>
+              <div>
+                <span className="mp-label-with-tip">
+                  <span>Cost</span>
+                  <InfoTip
+                    title="Cost Calculation Status"
+                    text="confirmed_by_provider = reported directly by API; estimated = calculated from your Pricing Rules; unknown = missing token usage or matching rate."
+                  />
+                </span>
+                <strong className="font-mono">{current.estimated_cost != null ? `$${current.estimated_cost.toFixed(6)}` : 'Not priced'} <span className="mp-muted">({current.cost_status})</span></strong>
+              </div>
             </div>
 
-            {(current.failover_from_model || (current.failover_attempts || 0) > 0 || current.failover_trace) && (
+            {hasFailoverActivity(current) && (
               <div className="mp-detail-section">
                 <div className="mp-detail-section-head">
-                  <span>Failover routing</span>
-                  <span className="font-mono">{current.failover_attempts || 0} attempt(s)</span>
+                  <span>Failover routing & attempt log</span>
+                  <span className="font-mono">{current.failover_attempts || 0} fallback(s)</span>
                 </div>
                 <div className="mp-detail-grid compact">
                   <div><span>Primary model</span><strong className="font-mono">{current.failover_from_model || '—'}</strong></div>
-                  <div><span>Reason</span><strong>{failoverReasonLabel(current.failover_reason)}</strong></div>
+                  <div><span>Trigger reason</span><strong>{failoverReasonLabel(current.failover_reason)}</strong></div>
                   <div><span>Served by</span><strong className="font-mono">{current.failover_used ? current.model : 'none'}</strong></div>
                   <div><span>Outcome</span><strong>{current.failover_used ? 'Fallback succeeded' : 'All attempts failed'}</strong></div>
                 </div>
-                {(() => {
-                  const trace = parseFailoverTrace(current.failover_trace);
-                  if (trace.length === 0) return null;
-                  return (
-                    <div className="mp-failover-trace-list">
-                      {trace.map((entry, index) => (
-                        <div className="mp-failover-trace-row" key={`${entry.model}-${index}`}>
-                          <span className="font-mono">{entry.model}</span>
-                          <span>{failoverReasonLabel(entry.outcome)}</span>
-                          <span className="font-mono">
-                            {entry.status ? `HTTP ${entry.status}` : '—'}
-                            {entry.durationMs != null ? ` · ${Math.round(entry.durationMs)} ms` : ''}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
+                <FailoverTraceList
+                  trace={parseFailoverTrace(current.failover_trace)}
+                  emptyMessage="Per-attempt trace unavailable for this request."
+                />
               </div>
             )}
 

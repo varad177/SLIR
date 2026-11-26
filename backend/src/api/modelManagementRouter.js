@@ -42,7 +42,7 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
   router.post('/custom', (req, res) => {
     try {
       const {
-        modelId, displayName, provider, apiBase, apiKey, keepApiKey,
+        modelId, displayName, provider, format, apiBase, apiKey, keepApiKey,
         contextWindow, maxOutputTokens, inputCostPerMillion,
         outputCostPerMillion, timeoutMs
       } = req.body;
@@ -54,6 +54,7 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
         modelId,
         displayName,
         provider,
+        format,
         apiBase,
         apiKey,
         keepApiKey,
@@ -73,9 +74,9 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
 
   router.post('/custom/test', async (req, res) => {
     try {
-      const { apiBase, apiKey, modelId, timeoutMs } = req.body;
+      const { apiBase, apiKey, modelId, timeoutMs, format } = req.body;
       const result = await ollamaService.testModelConnection({
-        apiBase, apiKey, modelId, timeoutMs
+        apiBase, apiKey, modelId, timeoutMs, format
       });
       res.json(result);
     } catch (err) {
@@ -258,12 +259,14 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
    */
   router.post('/test-prompt', async (req, res) => {
     try {
-      const { model, prompt, temperature, max_tokens, maxTokens, stream } = req.body;
+      const { model, prompt, messages, applicationId, temperature, max_tokens, maxTokens, stream } = req.body;
       if (!model) {
         return res.status(400).json({ error: 'Field "model" is required' });
       }
 
       const result = await ollamaService.runTestPrompt(model, prompt, {
+        messages,
+        applicationId,
         temperature,
         maxTokens: max_tokens ?? maxTokens,
         stream
@@ -272,6 +275,45 @@ export function createModelManagementRouter(ollamaService, analyticsService, db)
     } catch (err) {
       console.error('[MODEL-MGR] Error running test prompt:', err);
       res.status(500).json({ error: err.message || 'Failed to run test prompt benchmark' });
+    }
+  });
+
+  router.post('/test-prompt/stream', async (req, res) => {
+    const { model, prompt, messages, applicationId, temperature, max_tokens, maxTokens } = req.body || {};
+    if (!model) {
+      return res.status(400).json({ error: 'Field "model" is required' });
+    }
+
+    res.status(200);
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+    res.flushHeaders?.();
+
+    const writeEvent = (payload) => {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
+    };
+
+    try {
+      const result = await ollamaService.runTestPrompt(model, prompt, {
+        messages,
+        applicationId,
+        temperature,
+        maxTokens: max_tokens ?? maxTokens,
+        stream: true,
+        onDelta: (delta) => writeEvent({ type: 'delta', content: delta })
+      }, db);
+      writeEvent({ type: 'done', result });
+      res.end();
+    } catch (err) {
+      console.error('[MODEL-MGR] Error streaming test prompt:', err);
+      writeEvent({ type: 'error', error: err.message || 'Failed to stream test prompt' });
+      res.end();
     }
   });
 

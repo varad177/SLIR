@@ -73,10 +73,15 @@ Directly on the home page, tune your runtime parameters and run an instant diagn
 ### 3. 🔌 Universal OpenAI Compatibility
 SLIR exposes standard OpenAI-compatible endpoints:
 * `POST /v1/chat/completions` (Streaming & Non-Streaming)
+* `POST /v1/messages` (Native Anthropic Messages API, Streaming & Non-Streaming)
 * `GET  /v1/models`
 * `GET  /api/health`
 
 Works out-of-the-box with standard OpenAI SDKs in Python, C# / .NET, JavaScript/TypeScript, Go, and cURL.
+
+**Upstream API formats:** every custom model is stored with a `format` — `openai` (Chat Completions at `/chat/completions`) or `anthropic` (native Messages API at `/v1/messages`). SLIR translates requests, responses, streaming events, token usage, and provider errors in both directions, so clients always see OpenAI-shaped data. Existing models default to `openai`. Text chat, streaming, usage, vision (`image_url` content parts), tool/function calling (`tools`, `tool_choice`, `parallel_tool_calls`, plus legacy `functions`/`function_call`), and JSON structured output (`response_format: json_object` / `json_schema`, emulated with a forced output tool) translate fully. `cache_control` can be attached to system/user messages and tools for Anthropic prompt caching, and native `top_k`, `metadata`, and `thinking` parameters pass through when present in the request body. OpenAI-only features that Anthropic does not support (`n`, `logprobs`, `seed`) are not forwarded.
+
+**Native Anthropic SDK clients:** `POST /v1/messages` accepts the Anthropic Messages API request shape and the `x-api-key` header used by the official Anthropic SDKs. Requests are converted to the internal OpenAI shape, run through the same model resolution, failover, budget, and telemetry pipeline as Chat Completions, then responses (including streaming SSE events and errors) are converted back to Anthropic format. The client-provided model name is echoed in `message.model`, usage is reported as `input_tokens` / `output_tokens`, and requests are recorded with call type `anthropic.messages`. Because the gateway resolves model names from its own catalog, pass a model id configured in the dashboard (for example `claude-model` or `active-model`); raw upstream ids are not auto-registered.
 
 ### 4. 🔒 100% Local & Privacy-First
 * Powered by embedded **SQLite** (WAL mode enabled).
@@ -101,7 +106,7 @@ The production Dockerfile bundles the React dashboard and the Node.js gateway in
 ```bash
 docker compose up -d --build
 ```
-> The default `docker-compose.yml` builds `slir-app:latest` from `Dockerfile.prod` with **zero configuration or `.env` file required**.
+> The default `docker-compose.yml` builds `slir-app:latest` from `Dockerfile` with **zero configuration or `.env` file required**.
 > *(Optional)* To use an image that is already built or loaded, run: `SLIR_IMAGE=slir-app:v1.0.0 docker compose up -d`
 
 * **Dashboard (Web UI):** [http://localhost:4100](http://localhost:4100)
@@ -113,18 +118,18 @@ Both ports reach the same container listener; the dashboard uses relative `/api`
 
 ### Option A2: Build and export a single app image
 
-The production Dockerfile builds the frontend and bundles it into the Node.js backend image. Build and export that image:
+The root Dockerfile builds the frontend and bundles it into the Node.js backend image. Build and export that image:
 
 ```bash
-docker build -f Dockerfile.prod -t slir-app:latest .
+docker build -t slir-app:latest .
 docker save -o slir-app.tar slir-app:latest
 ```
 
-Copy `slir-app.tar` and `docker-compose.prod.yml` to the other machine, then load and run:
+Copy `slir-app.tar` and `docker-compose.yml` to the other machine, then load and run:
 
 ```bash
 docker load -i slir-app.tar
-docker compose -f docker-compose.prod.yml up -d
+docker compose up -d
 ```
 
 The dashboard is available at `http://localhost:4100`; the API gateway is at `http://localhost:4101/v1`. SQLite data remains in the `ai_monitor_sqlite_data` Docker volume.
@@ -174,11 +179,13 @@ docker compose up -d --build
 
 ## 💻 Code Examples
 
+> Create an application under **Applications** to get an `mp_live_...` virtual key. Requests authenticated with an `mp_live_...` key are automatically attributed and recorded in telemetry, budgets, and failover.
+
 ### 1. cURL
 ```bash
 curl http://localhost:4101/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer dev-secret-key" \
+  -H "Authorization: Bearer mp_live_your_application_key" \
   -d '{
     "model": "active-model",
     "messages": [
@@ -193,7 +200,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 
 var client = new HttpClient { BaseAddress = new Uri("http://localhost:4101/v1/") };
-client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "dev-secret-key");
+client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "mp_live_your_application_key");
 
 var requestBody = new {
     model = "active-model", // Dynamically resolved by SLIR
@@ -213,7 +220,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:4101/v1",
-    api_key="dev-secret-key"
+    api_key="mp_live_your_application_key"
 )
 
 response = client.chat.completions.create(
@@ -230,7 +237,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   baseURL: "http://localhost:4101/v1",
-  apiKey: "dev-secret-key"
+  apiKey: "mp_live_your_application_key"
 });
 
 const response = await client.chat.completions.create({
@@ -239,6 +246,24 @@ const response = await client.chat.completions.create({
 });
 
 console.log(response.choices[0].message.content);
+```
+
+### 5. Python (`anthropic` SDK, native Messages API)
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://localhost:4101",
+    api_key="dev-secret-key"  # sent as x-api-key
+)
+
+message = client.messages.create(
+    model="claude-model",  # A model id configured in the SLIR dashboard
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Hello SLIR!"}]
+)
+
+print(message.content[0].text)
 ```
 
 ---
