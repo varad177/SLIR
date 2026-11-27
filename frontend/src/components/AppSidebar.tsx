@@ -123,7 +123,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
                     fontSize: '0.625rem',
                     fontWeight: 700,
                     background: isActive ? 'var(--mp-orange)' : 'var(--mp-hover-bg)',
-                    color: isActive ? '#0b0d13' : 'var(--mp-text-secondary)',
+                    color: isActive ? 'var(--mp-btn-primary-text, #0b0d13)' : 'var(--mp-text-secondary)',
                     padding: '1px 5px',
                     borderRadius: '8px'
                   }}

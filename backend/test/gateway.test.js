@@ -40,6 +40,14 @@ function latestEvent() {
   `).get();
 }
 
+function setAppModel(defaultModel) {
+  db.prepare("UPDATE applications SET default_model = ? WHERE id = 'app_test'").run(defaultModel);
+}
+
+function setGlobalActiveModel(model) {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('active_model', ?)").run(model);
+}
+
 async function configureFailover(fallbackModels, enabled = true) {
   return fetch(`${baseUrl}/api/applications/app_test`, {
     method: 'PATCH',
@@ -104,6 +112,18 @@ before(async () => {
       if (behavior === 'bad_request') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'bad request' }));
+        return;
+      }
+
+      if (behavior === 'bad_gateway') {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bad gateway' }));
+        return;
+      }
+
+      if (behavior === 'invalid_json') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html>502 Bad Gateway</html>');
         return;
       }
 
@@ -214,6 +234,8 @@ after(async () => {
 afterEach(() => {
   mockMode = 'success';
   mockBehaviors = {};
+  setAppModel('pinned-model');
+  setGlobalActiveModel('qwen2.5:3b');
   db.prepare("UPDATE applications SET failover_enabled = 0, fallback_models = '[]' WHERE id = 'app_test'").run();
 });
 
@@ -279,6 +301,7 @@ test('unknown application keys are rejected without telemetry', async () => {
 
 test('successful cloud calls are persisted with provider usage', async () => {
   mockMode = 'success';
+  setAppModel('mock-model');
   const res = await chat({
     model: 'mock-model',
     messages: [{ role: 'user', content: 'hello' }]
@@ -324,8 +347,38 @@ test('active-model honours the application default model', async () => {
   assert.equal(event.client_model, 'active-model');
 });
 
+test('explicit SDK model is ignored in favour of the application selected model', async () => {
+  mockMode = 'success';
+  setAppModel('pinned-model');
+  const res = await chat({
+    model: 'gpt-4o-from-sdk',
+    messages: [{ role: 'user', content: 'hello' }]
+  });
+  assert.equal(res.status, 200);
+  assert.equal(lastMockBody.model, 'pinned-model');
+  const event = latestEvent();
+  assert.equal(event.model, 'pinned-model');
+  assert.equal(event.client_model, 'gpt-4o-from-sdk');
+});
+
+test('explicit SDK model is ignored in favour of global active model when app follows global', async () => {
+  mockMode = 'success';
+  setAppModel('active-model');
+  setGlobalActiveModel('mock-model');
+  const res = await chat({
+    model: 'claude-sonnet-hardcoded-in-sdk',
+    messages: [{ role: 'user', content: 'hello' }]
+  });
+  assert.equal(res.status, 200);
+  assert.equal(lastMockBody.model, 'mock-model');
+  const event = latestEvent();
+  assert.equal(event.model, 'mock-model');
+  assert.equal(event.client_model, 'claude-sonnet-hardcoded-in-sdk');
+});
+
 test('failed upstream calls are persisted as failures', async () => {
   mockMode = 'fail';
+  setAppModel('mock-model');
   const res = await chat({
     model: 'mock-model',
     messages: [{ role: 'user', content: 'hello' }]
@@ -343,6 +396,7 @@ test('failed upstream calls are persisted as failures', async () => {
 
 test('streaming cloud calls request usage and persist final token counts', async () => {
   mockMode = 'success';
+  setAppModel('mock-model');
   const res = await chat({
     model: 'mock-model',
     stream: true,
@@ -364,6 +418,7 @@ test('streaming cloud calls request usage and persist final token counts', async
 
 test('anthropic-format models are converted to and from the Messages API', async () => {
   mockMode = 'success';
+  setAppModel('claude-model');
   const res = await chat({
     model: 'claude-model',
     messages: [
@@ -399,6 +454,7 @@ test('anthropic-format models are converted to and from the Messages API', async
 
 test('anthropic streaming responses are re-emitted as OpenAI SSE', async () => {
   mockMode = 'success';
+  setAppModel('claude-model');
   const res = await chat({
     model: 'claude-model',
     stream: true,
@@ -424,6 +480,7 @@ test('anthropic streaming responses are re-emitted as OpenAI SSE', async () => {
 });
 
 test('anthropic tool calls round-trip through the gateway', async () => {
+  setAppModel('claude-tools-model');
   mockBehaviors['claude-tools-model'] = 'tool_use';
   const res = await chat({
     model: 'claude-tools-model',
@@ -461,6 +518,7 @@ test('anthropic tool calls round-trip through the gateway', async () => {
 });
 
 test('anthropic tool calls stream as OpenAI tool_call deltas through the gateway', async () => {
+  setAppModel('claude-tools-model');
   mockBehaviors['claude-tools-model'] = 'tool_use';
   const res = await chat({
     model: 'claude-tools-model',
@@ -488,6 +546,7 @@ test('anthropic tool calls stream as OpenAI tool_call deltas through the gateway
 });
 
 test('anthropic json_schema response_format returns JSON content through the gateway', async () => {
+  setAppModel('claude-tools-model');
   mockBehaviors['claude-tools-model'] = 'tool_use';
   const res = await chat({
     model: 'claude-tools-model',
@@ -506,6 +565,7 @@ test('anthropic json_schema response_format returns JSON content through the gat
 });
 
 test('native anthropic ingress returns Anthropic Messages responses', async () => {
+  setAppModel('claude-model');
   const res = await messages({
     model: 'claude-model',
     max_tokens: 64,
@@ -534,7 +594,28 @@ test('native anthropic ingress returns Anthropic Messages responses', async () =
   assert.equal(event.client_model, 'claude-model');
 });
 
+test('native anthropic ingress ignores SDK model and routes via SLIR selected model', async () => {
+  setAppModel('claude-model');
+  const res = await messages({
+    model: 'claude-3-7-sonnet-sdk',
+    max_tokens: 32,
+    messages: [{ role: 'user', content: 'hello' }]
+  });
+  assert.equal(res.status, 200);
+  assert.equal(lastMockBody.model, 'claude-model');
+
+  const body = await res.json();
+  assert.equal(body.model, 'claude-3-7-sonnet-sdk');
+
+  const event = latestEvent();
+  assert.equal(event.status, 'success');
+  assert.equal(event.call_type, 'anthropic.messages');
+  assert.equal(event.model, 'claude-model');
+  assert.equal(event.client_model, 'claude-3-7-sonnet-sdk');
+});
+
 test('native anthropic ingress streams Anthropic SSE events', async () => {
+  setAppModel('claude-model');
   const res = await messages({
     model: 'claude-model',
     max_tokens: 64,
@@ -563,6 +644,7 @@ test('native anthropic ingress streams Anthropic SSE events', async () => {
 });
 
 test('native anthropic ingress round-trips tool use', async () => {
+  setAppModel('claude-tools-model');
   mockBehaviors['claude-tools-model'] = 'tool_use';
   const res = await messages({
     model: 'claude-tools-model',
@@ -594,6 +676,7 @@ test('native anthropic ingress round-trips tool use', async () => {
 });
 
 test('native anthropic ingress converts tool results for the upstream', async () => {
+  setAppModel('claude-model');
   const res = await messages({
     model: 'claude-model',
     max_tokens: 64,
@@ -630,6 +713,7 @@ test('native anthropic ingress converts tool results for the upstream', async ()
 });
 
 test('native anthropic ingress returns Anthropic-formatted errors', async () => {
+  setAppModel('claude-model');
   const unauthorized = await messages({
     model: 'claude-model',
     max_tokens: 8,
@@ -647,6 +731,7 @@ test('native anthropic ingress returns Anthropic-formatted errors', async () => 
   assert.equal(invalidBody.error.type, 'invalid_request_error');
   assert.match(invalidBody.error.message, /messages/);
 
+  setAppModel('unreachable-model');
   const failed = await messages({
     model: 'unreachable-model',
     max_tokens: 8,
@@ -659,6 +744,7 @@ test('native anthropic ingress returns Anthropic-formatted errors', async () => 
 });
 
 test('native anthropic ingress supports failover', async () => {
+  setAppModel('mock-model');
   mockBehaviors = { 'mock-model': 'fail' };
   const configured = await configureFailover(['fallback-model']);
   assert.equal(configured.status, 200);
@@ -685,6 +771,7 @@ test('native anthropic ingress supports failover', async () => {
 });
 
 test('native anthropic ingress enforces budgets with Anthropic error shapes', async () => {
+  setAppModel('budget-model');
   const created = await fetch(`${baseUrl}/api/budgets`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -854,6 +941,7 @@ test('application failover settings are validated and returned', async () => {
 });
 
 test('rate-limited cloud calls fail over to the next application model', async () => {
+  setAppModel('mock-model');
   mockBehaviors = { 'mock-model': 'rate_limit' };
   const configured = await configureFailover(['fallback-model']);
   assert.equal(configured.status, 200);
@@ -877,6 +965,7 @@ test('rate-limited cloud calls fail over to the next application model', async (
 });
 
 test('provider 5xx failures fail over to the next application model', async () => {
+  setAppModel('mock-model');
   mockBehaviors = { 'mock-model': 'fail' };
   const configured = await configureFailover(['fallback-model']);
   assert.equal(configured.status, 200);
@@ -892,6 +981,7 @@ test('provider 5xx failures fail over to the next application model', async () =
 });
 
 test('network failures fail over to the next application model', async () => {
+  setAppModel('unreachable-model');
   const configured = await configureFailover(['mock-model']);
   assert.equal(configured.status, 200);
 
@@ -906,6 +996,7 @@ test('network failures fail over to the next application model', async () => {
 });
 
 test('streaming requests fail over before the stream starts', async () => {
+  setAppModel('mock-model');
   mockBehaviors = { 'mock-model': 'rate_limit' };
   const configured = await configureFailover(['fallback-model']);
   assert.equal(configured.status, 200);
@@ -922,23 +1013,30 @@ test('streaming requests fail over before the stream starts', async () => {
   assert.equal(event.failover_used, 1);
 });
 
-test('non-retryable upstream errors do not fail over', async () => {
-  mockBehaviors = { 'mock-model': 'bad_request' };
+test('all upstream errors including 400, 502 and invalid JSON fail over when enabled and expose failover headers', async () => {
+  setAppModel('mock-model');
   const configured = await configureFailover(['fallback-model']);
   assert.equal(configured.status, 200);
 
-  const res = await chat({ model: 'mock-model', messages: [] });
-  assert.equal(res.status, 400);
-  assert.equal(lastMockBody.model, 'mock-model');
+  for (const mode of ['bad_request', 'bad_gateway', 'invalid_json']) {
+    mockBehaviors = { 'mock-model': mode };
+    const res = await chat({ model: 'mock-model', messages: [] });
+    assert.equal(res.status, 200);
+    assert.equal(lastMockBody.model, 'fallback-model');
+    assert.equal(res.headers.get('x-slir-failover'), 'true');
+    assert.equal(res.headers.get('x-slir-failover-from'), 'mock-model');
+    assert.equal(res.headers.get('x-slir-model'), 'fallback-model');
 
-  const event = latestEvent();
-  assert.equal(event.status, 'failure');
-  assert.equal(event.model, 'mock-model');
-  assert.equal(event.failover_attempts, 0);
-  assert.equal(event.failover_used, 0);
+    const event = latestEvent();
+    assert.equal(event.status, 'success');
+    assert.equal(event.model, 'fallback-model');
+    assert.equal(event.failover_attempts, 1);
+    assert.equal(event.failover_used, 1);
+  }
 });
 
 test('all failed fallback attempts produce one failure row with a trace', async () => {
+  setAppModel('mock-model');
   mockBehaviors = { 'mock-model': 'rate_limit', 'fallback-model': 'fail' };
   const configured = await configureFailover(['fallback-model']);
   assert.equal(configured.status, 200);
@@ -957,6 +1055,7 @@ test('all failed fallback attempts produce one failure row with a trace', async 
 });
 
 test('disabled failover leaves the original request unchanged', async () => {
+  setAppModel('mock-model');
   mockBehaviors = { 'mock-model': 'rate_limit' };
   const configured = await configureFailover(['fallback-model'], false);
   assert.equal(configured.status, 200);

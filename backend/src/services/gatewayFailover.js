@@ -52,7 +52,7 @@ function classifyStatus(status) {
   if (status === 429) return { reason: 'rate_limit', retryable: true };
   if (status === 408) return { reason: 'timeout', retryable: true };
   if (status >= 500) return { reason: 'upstream_5xx', retryable: true };
-  return { reason: 'upstream_error', retryable: false };
+  return { reason: 'upstream_error', retryable: true };
 }
 
 function classifyThrown(err, context, durationMs = 0) {
@@ -279,10 +279,24 @@ async function executeCloudAttempt(target, reqBody, options) {
   } catch (err) {
     return {
       ok: false,
-      retryable: false,
+      retryable: true,
       reason: 'invalid_response',
       status: 502,
       message: err?.message || 'Upstream returned invalid JSON',
+      provider: target.provider,
+      model: target.model,
+      durationMs: performance.now() - startedAt
+    };
+  }
+
+  if (data?.error && !Array.isArray(data?.choices) && !Array.isArray(data?.content)) {
+    const errMsg = typeof data.error === 'string' ? data.error : (data.error?.message || JSON.stringify(data.error));
+    return {
+      ok: false,
+      retryable: true,
+      reason: 'upstream_error',
+      status: Number(data.error?.code) || 502,
+      message: errMsg,
       provider: target.provider,
       model: target.model,
       durationMs: performance.now() - startedAt
@@ -444,6 +458,18 @@ async function executeLocalAttempt(target, reqBody, options) {
         if (chatRes.ok) {
           lastHealthyOllama = { url, at: Date.now() };
           const data = await chatRes.json();
+          if (data?.error && !data?.message) {
+            lastFailure = {
+              ok: false,
+              retryable: true,
+              reason: 'upstream_error',
+              status: 502,
+              message: typeof data.error === 'string' ? data.error : (data.error?.message || JSON.stringify(data.error)),
+              durationMs: performance.now() - startedAt,
+              ...context
+            };
+            continue;
+          }
           const durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
           const nsToMs = (value) => (Number.isFinite(value) && value > 0 ? Math.round((value / 1e6) * 10) / 10 : null);
           const promptEvalMs = nsToMs(data.prompt_eval_duration);
@@ -548,10 +574,23 @@ async function executeLocalAttempt(target, reqBody, options) {
     } catch (err) {
       return {
         ok: false,
-        retryable: false,
+        retryable: true,
         reason: 'invalid_response',
         status: 502,
         message: err?.message || 'Upstream returned invalid JSON',
+        ...context,
+        durationMs: performance.now() - startedAt
+      };
+    }
+
+    if (data?.error && !Array.isArray(data?.choices)) {
+      const errMsg = typeof data.error === 'string' ? data.error : (data.error?.message || JSON.stringify(data.error));
+      return {
+        ok: false,
+        retryable: true,
+        reason: 'upstream_error',
+        status: Number(data.error?.code) || 502,
+        message: errMsg,
         ...context,
         durationMs: performance.now() - startedAt
       };

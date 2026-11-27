@@ -174,7 +174,15 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
     return callback(null, false);
   },
-  exposedHeaders: ['X-Request-ID']
+  exposedHeaders: [
+    'X-Request-ID',
+    'X-SLIR-Telemetry',
+    'X-SLIR-Model',
+    'X-SLIR-Failover',
+    'X-SLIR-Failover-From',
+    'X-SLIR-Failover-Reason',
+    'X-SLIR-Failover-Attempts'
+  ]
 }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -291,8 +299,9 @@ app.get(['/v1/models', '/api/v1/models'], async (req, res) => {
 
 /**
  * Dynamic Active-Model Resolver:
- * Accepts OpenAI-compatible completions for 'active-model', dynamically looks up
- * current active model from SQLite, and forwards to local Ollama.
+ * Accepts OpenAI-compatible completions, ignores any model name specified in the
+ * incoming SDK payload, and always routes via SLIR's selected model (app-pinned
+ * model or shared global active model from SQLite).
  *
  * `egress` optionally adapts the response for a non-OpenAI ingress (the native
  * Anthropic /v1/messages endpoint). It provides:
@@ -325,7 +334,7 @@ async function handleChatCompletions(req, res, egress = null) {
         applicationId: appId,
         callType: egress?.callType || 'chat.completion',
         tokensEstimated: 0,
-        clientModel: typeof req.body?.model === 'string' ? req.body.model : 'active-model',
+        clientModel: typeof req.body?.model === 'string' && req.body.model.trim() ? req.body.model.trim() : 'active-model',
         httpStatus: fields.status === 'failure' ? null : 200,
         timestamp: new Date().toISOString(),
         ...fields
@@ -405,12 +414,11 @@ async function handleChatCompletions(req, res, egress = null) {
     }
 
     const activeModel = (ollamaService && db) ? ollamaService.getActiveModel(db) : 'qwen2.5:3b';
-    const appDefaultModel = appRow?.default_model;
-    const requestedModel = req.body.model;
-    const usesActiveAlias = !requestedModel || requestedModel === 'active-model';
-    const targetModel = usesActiveAlias
-      ? (appDefaultModel && appDefaultModel !== 'active-model' ? appDefaultModel : activeModel)
-      : requestedModel.replace(/^ollama\//, '');
+    const appDefaultModel = typeof appRow?.default_model === 'string' ? appRow.default_model.trim() : '';
+    const selectedModel = appDefaultModel && appDefaultModel !== 'active-model'
+      ? appDefaultModel
+      : activeModel;
+    const targetModel = String(selectedModel || 'qwen2.5:3b').replace(/^ollama\//, '');
 
     const primaryTarget = resolveModelTarget(db, targetModel);
     const primaryEventModel = eventModelForTarget(primaryTarget);
@@ -538,6 +546,8 @@ async function handleChatCompletions(req, res, egress = null) {
           failoverActive
         )
       });
+      res.setHeader('X-SLIR-Failover', failoverActive ? 'attempted' : 'false');
+      res.setHeader('X-SLIR-Failover-Attempts', String(fallbackAttempts));
       return sendError(status, {
         error: {
           message: `Failed to route to model ${failureInfo?.model || primaryEventModel}: ${message}`,
@@ -555,6 +565,18 @@ async function handleChatCompletions(req, res, egress = null) {
       usedFallback,
       failoverActive
     );
+
+    res.setHeader('X-SLIR-Model', success.eventModel);
+    if (usedFallback) {
+      res.setHeader('X-SLIR-Failover', 'true');
+      res.setHeader('X-SLIR-Failover-From', primaryEventModel);
+      if (firstFailureReason) {
+        res.setHeader('X-SLIR-Failover-Reason', firstFailureReason);
+      }
+      res.setHeader('X-SLIR-Failover-Attempts', String(fallbackAttempts));
+    } else {
+      res.setHeader('X-SLIR-Failover', 'false');
+    }
 
     if (success.mode === 'stream') {
       const clientTransform = egress ? egress.createStreamTransform() : null;

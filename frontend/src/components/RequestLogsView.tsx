@@ -1,19 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { RequestsResponse, ApplicationItem, UsageEventItem } from '../types/analytics';
 import { fetchRequests } from '../api/client';
-import { copyText } from '../utils/clipboard';
-import { failoverReasonLabel, hasFailoverActivity, parseFailoverTrace } from '../utils/failover';
-import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
+import { failoverReasonLabel } from '../utils/failover';
+import {
+  formatTimestampParts,
+  formatLatency,
+  formatBreakdown,
+  requestStatusLabel
+} from '../utils/telemetryFormat';
 import {
   ShieldCheckIcon,
   SearchIcon,
-  CopyIcon,
-  CheckIcon,
-  CloseIcon,
   RotateCwIcon
 } from './icons/Icons';
 import { InfoTip } from './InfoTip';
-import { FailoverTraceList } from './FailoverTraceList';
+import { FailoverRouteSummary } from './FailoverRouteSummary';
+import { RequestDetailInspector } from './RequestDetailInspector';
 
 interface RequestLogsViewProps {
   applications?: ApplicationItem[];
@@ -34,24 +36,6 @@ const TIMEFRAME_MS: Record<'1h' | '24h' | '7d', number> = {
 
 const timeframeStart = (tf: '1h' | '24h' | '7d') =>
   new Date(Date.now() - TIMEFRAME_MS[tf]).toISOString();
-
-const formatTimestampParts = (iso?: string) => {
-  if (!iso) return { time: '--:--:--', date: '----/--/--' };
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) {
-    const parts = iso.split('T');
-    return { time: parts[1]?.replace('Z', '').slice(0, 8) || iso, date: parts[0] || '' };
-  }
-  const pad = (n: number, z = 2) => String(n).padStart(z, '0');
-  return {
-    time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`,
-    date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
-  };
-};
-
-const formatLatency = (ms: number) => ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)} ms`;
-const formatBreakdown = (ms: number | null | undefined) => ms != null ? `${(ms / 1000).toFixed(2)}s` : 'n/a';
-const statusLabel = (item: UsageEventItem) => item.http_status ? String(item.http_status) : (item.status === 'success' ? '200' : 'error');
 
 export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   applications = [],
@@ -74,7 +58,6 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
   const [activeTimeframe, setActiveTimeframe] = useState<'1h' | '24h' | '7d'>('24h');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [selectedItem, setSelectedItem] = useState<UsageEventItem | null>(null);
-  const [copied, setCopied] = useState<'request' | 'json' | 'curl' | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -196,29 +179,8 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
     }
   };
 
-  const copyInspectorText = async (kind: 'request' | 'json' | 'curl') => {
-    if (!selectedItem) return;
-    const text = kind === 'request'
-      ? selectedItem.request_id
-      : kind === 'curl'
-        ? `curl ${getBrowserGatewayBaseUrl()}/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer $SLIR_APP_KEY" \\\n  -H "X-Request-ID: ${selectedItem.trace_id || selectedItem.request_id}" \\\n  -d '{"model":"${selectedItem.client_model || selectedItem.model}","messages":[{"role":"user","content":"Hello"}]}'`
-        : JSON.stringify(selectedItem, null, 2);
-    if (!text) return;
-    if (await copyText(text)) {
-      setCopied(kind);
-      setTimeout(() => setCopied(null), 2000);
-    }
-  };
-
   const items = data?.items || [];
   const current = selectedItem;
-  const promptTokens = current?.prompt_tokens ?? 0;
-  const completionTokens = current?.completion_tokens ?? 0;
-  const totalTokens = current?.total_tokens ?? promptTokens + completionTokens;
-  const promptPercent = totalTokens > 0 ? Math.round((promptTokens / totalTokens) * 100) : 0;
-  const generationTps = current?.eval_duration_ms && current.completion_tokens
-    ? Math.round((current.completion_tokens / (current.eval_duration_ms / 1000)) * 10) / 10
-    : 0;
 
   return (
     <div className="mp-logs-page">
@@ -334,7 +296,7 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                 <tr>
                   <th>Time</th>
                   <th>Application</th>
-                  <th>Model</th>
+                  <th>Model &amp; routing</th>
                   <th>Status</th>
                   <th>Latency</th>
                   <th>Tokens</th>
@@ -356,7 +318,7 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                   return (
                     <tr
                       key={item.id}
-                      className={current?.id === item.id ? 'selected' : ''}
+                      className={`mp-clickable-row ${current?.id === item.id ? 'selected' : ''}`}
                       onClick={() => setSelectedItem(item)}
                       tabIndex={0}
                       aria-selected={current?.id === item.id}
@@ -378,26 +340,11 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
                         )}
                       </td>
                       <td>
-                        <div className="mp-table-primary font-mono">
-                          {item.model}
-                          {hasFailoverActivity(item) && (
-                            <span className={`mp-failover-badge ${item.failover_used ? 'used' : 'failed'}`}>
-                              {item.failover_used ? 'Failover' : 'Failover failed'}
-                            </span>
-                          )}
-                        </div>
-                        <div className="mp-table-secondary font-mono">{item.provider}</div>
-                        {hasFailoverActivity(item) && (
-                          <div className="mp-table-secondary font-mono">
-                            from {item.failover_from_model || 'primary'}
-                            {item.failover_reason ? ` · ${failoverReasonLabel(item.failover_reason)}` : ''}
-                            {(item.failover_attempts || 0) > 0 ? ` · ${item.failover_attempts} fallback(s)` : ''}
-                          </div>
-                        )}
+                        <FailoverRouteSummary item={item} />
                       </td>
                       <td>
                         <span className={`mp-badge ${ok ? 'success' : 'danger'}`}>
-                          {ok ? 'Success' : 'Failure'} · {statusLabel(item)}
+                          {ok ? 'Success' : 'Failure'} · {requestStatusLabel(item)}
                         </span>
                       </td>
                       <td className="font-mono">
@@ -437,144 +384,11 @@ export const RequestLogsView: React.FC<RequestLogsViewProps> = ({
         </section>
 
         {current && (
-          <aside className="mp-card mp-inspector">
-            <div className="mp-inspector-head">
-              <div>
-                <div className="mp-eyebrow">Request detail</div>
-                <div className="mp-inspector-id font-mono" title={current.request_id}>
-                  {current.request_id}
-                </div>
-              </div>
-              <div className="mp-inspector-actions">
-                <button className="mp-icon-btn" onClick={() => copyInspectorText('request')} title="Copy request ID">
-                  {copied === 'request' ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-                </button>
-                <button className="mp-icon-btn" onClick={() => copyInspectorText('curl')} title="Copy as cURL">
-                  {copied === 'curl' ? <CheckIcon size={13} /> : <span className="font-mono" style={{ fontSize: '0.625rem' }}>cURL</span>}
-                </button>
-                <button className="mp-icon-btn" onClick={() => setSelectedItem(null)} title="Close detail" aria-label="Close detail">
-                  <CloseIcon size={14} />
-                </button>
-              </div>
-            </div>
-
-            <div className={`mp-inspector-status ${current.status === 'success' ? 'ok' : 'error'}`}>
-              <strong>{current.status === 'success' ? 'Request completed' : 'Request failed'}</strong>
-              <span className="font-mono">HTTP {statusLabel(current)} · {formatLatency(current.latency_ms)}</span>
-            </div>
-
-            <div className="mp-detail-grid">
-              <div><span>Application</span><strong>{current.application_name || current.application_id || 'Direct client'}</strong></div>
-              <div><span>Trace ID</span><strong className="font-mono" title={current.trace_id || undefined}>{current.trace_id || '—'}</strong></div>
-              <div><span>Provider</span><strong>{current.provider}</strong></div>
-              <div>
-                <span className="mp-label-with-tip">
-                  <span>Routed model</span>
-                  <InfoTip
-                    title="Routed Model"
-                    text="The actual local or cloud model that answered this request after resolving app pinning, Global Fallback, or Failover."
-                  />
-                </span>
-                <strong className="font-mono">{current.model}</strong>
-              </div>
-              <div>
-                <span className="mp-label-with-tip">
-                  <span>Requested model</span>
-                  <InfoTip
-                    title="Requested Model"
-                    text="The exact model value the client sent (for example 'active-model' before SLIR resolved it)."
-                  />
-                </span>
-                <strong className="font-mono">{current.client_model || 'active-model'}</strong>
-              </div>
-              <div><span>Call type</span><strong className="font-mono">{current.call_type}</strong></div>
-              <div><span>Streaming</span><strong>{current.is_streaming ? 'Yes' : 'No'}</strong></div>
-              <div>
-                <span className="mp-label-with-tip">
-                  <span>Cache state</span>
-                  <InfoTip
-                    title="Prompt Cache Status"
-                    text="cache_hit = reused cached KV prefix; standard = evaluated full prompt; cold_cache = slow initial evaluation; unknown = provider did not report cache data."
-                  />
-                </span>
-                <strong>{current.cache_status || 'unknown'}</strong>
-              </div>
-              <div>
-                <span className="mp-label-with-tip">
-                  <span>Cost</span>
-                  <InfoTip
-                    title="Cost Calculation Status"
-                    text="confirmed_by_provider = reported directly by API; estimated = calculated from your Pricing Rules; unknown = missing token usage or matching rate."
-                  />
-                </span>
-                <strong className="font-mono">{current.estimated_cost != null ? `$${current.estimated_cost.toFixed(6)}` : 'Not priced'} <span className="mp-muted">({current.cost_status})</span></strong>
-              </div>
-            </div>
-
-            {hasFailoverActivity(current) && (
-              <div className="mp-detail-section">
-                <div className="mp-detail-section-head">
-                  <span>Failover routing & attempt log</span>
-                  <span className="font-mono">{current.failover_attempts || 0} fallback(s)</span>
-                </div>
-                <div className="mp-detail-grid compact">
-                  <div><span>Primary model</span><strong className="font-mono">{current.failover_from_model || '—'}</strong></div>
-                  <div><span>Trigger reason</span><strong>{failoverReasonLabel(current.failover_reason)}</strong></div>
-                  <div><span>Served by</span><strong className="font-mono">{current.failover_used ? current.model : 'none'}</strong></div>
-                  <div><span>Outcome</span><strong>{current.failover_used ? 'Fallback succeeded' : 'All attempts failed'}</strong></div>
-                </div>
-                <FailoverTraceList
-                  trace={parseFailoverTrace(current.failover_trace)}
-                  emptyMessage="Per-attempt trace unavailable for this request."
-                />
-              </div>
-            )}
-
-            <div className="mp-detail-section">
-              <div className="mp-detail-section-head">
-                <span>Token allocation</span>
-                <span className="font-mono">{totalTokens.toLocaleString()} total</span>
-              </div>
-              <div className="mp-token-bar">
-                <span className="prompt" style={{ width: `${promptPercent}%` }} />
-                <span className="completion" style={{ width: `${100 - promptPercent}%` }} />
-              </div>
-              <div className="mp-detail-legend font-mono">
-                <span><i className="prompt" /> Prompt {promptTokens.toLocaleString()}</span>
-                <span><i className="completion" /> Completion {completionTokens.toLocaleString()}</span>
-              </div>
-            </div>
-
-            <div className="mp-detail-section">
-              <div className="mp-detail-section-head"><span>Latency breakdown</span></div>
-              <div className="mp-detail-grid compact">
-                <div><span>Total</span><strong className="font-mono">{formatLatency(current.latency_ms)}</strong></div>
-                <div><span>Model load</span><strong className="font-mono">{current.load_duration_ms != null ? formatLatency(current.load_duration_ms) : 'n/a'}</strong></div>
-                <div><span>Prompt eval</span><strong className="font-mono">{current.prompt_eval_duration_ms != null ? formatLatency(current.prompt_eval_duration_ms) : 'n/a'}</strong></div>
-                <div><span>Generation</span><strong className="font-mono">{current.eval_duration_ms != null ? formatLatency(current.eval_duration_ms) : 'n/a'}</strong></div>
-              </div>
-              {generationTps > 0 && <div className="mp-detail-note font-mono">{generationTps} tokens/sec during generation</div>}
-            </div>
-
-            {current.status === 'failure' && (
-              <div className="mp-error-panel">
-                <span>Error</span>
-                <strong>{current.error_type || 'Unknown error'}</strong>
-                {current.error_message && <p className="font-mono">{current.error_message}</p>}
-              </div>
-            )}
-
-            <div className="mp-inspector-footer">
-              <button className="mp-btn mp-btn-secondary" onClick={() => copyInspectorText('json')}>
-                {copied === 'json' ? 'Copied' : 'Copy telemetry JSON'}
-              </button>
-              {onReplayInPlayground && (
-                <button className="mp-btn mp-btn-ghost" onClick={onReplayInPlayground}>
-                  Open Playground
-                </button>
-              )}
-            </div>
-          </aside>
+          <RequestDetailInspector
+            item={current}
+            onClose={() => setSelectedItem(null)}
+            onReplayInPlayground={onReplayInPlayground}
+          />
         )}
       </div>
     </div>

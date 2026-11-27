@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { 
   SummaryKpis, 
   TimeSeriesPoint, 
@@ -25,10 +25,11 @@ const ModelsHubView = lazy(() => import('./components/ModelsHubView').then((m) =
 const CostsBudgetsView = lazy(() => import('./components/CostsBudgetsView').then((m) => ({ default: m.CostsBudgetsView })));
 const FailoverView = lazy(() => import('./components/FailoverView').then((m) => ({ default: m.FailoverView })));
 const HelpView = lazy(() => import('./components/HelpView').then((m) => ({ default: m.HelpView })));
-import { CopyIcon, CheckIcon, CloseIcon, BellIcon, SunIcon, MoonIcon } from './components/icons/Icons';
+import { CopyIcon, CheckIcon, CloseIcon, BellIcon, SunIcon, MoonIcon, ZapIcon } from './components/icons/Icons';
 import { InfoTip } from './components/InfoTip';
 import { useTheme } from './design-system/ThemeProvider';
 import { DEFAULT_GATEWAY_PORT, fetchGatewayConfig, getBrowserGatewayBaseUrl } from './utils/gatewayConnection';
+import { failoverReasonLabel } from './utils/failover';
 import { copyText } from './utils/clipboard';
 
 export type OverviewTimeframe = '15m' | '1h' | '6h' | '24h' | '7d' | 'all';
@@ -55,10 +56,22 @@ export const App: React.FC = () => {
   const [selectedAppId, setSelectedAppId] = useState<string | null | undefined>(undefined);
   const [benchmarkRefresh, setBenchmarkRefresh] = useState<number>(0);
   const [overviewTimeframe, setOverviewTimeframe] = useState<OverviewTimeframe>('24h');
+  const [overviewAutoRefresh, setOverviewAutoRefresh] = useState<boolean>(true);
+  const [overviewRefreshing, setOverviewRefreshing] = useState<boolean>(false);
   const [copiedConfig, setCopiedConfig] = useState<boolean>(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
   const [commandOpen, setCommandOpen] = useState<boolean>(false);
   const [resetNotification, setResetNotification] = useState<string | null>(null);
+  const [failoverNotice, setFailoverNotice] = useState<{
+    requestId: string;
+    appName: string;
+    fromModel: string;
+    toModel: string;
+    reason: string;
+    succeeded: boolean;
+    attempts: number;
+  } | null>(null);
+  const lastFailoverIdRef = useRef<string | null | undefined>(undefined);
   const [gatewayOnline, setGatewayOnline] = useState<boolean | null>(null);
   const [browserOnline, setBrowserOnline] = useState<boolean>(
     typeof navigator === 'undefined' ? true : navigator.onLine
@@ -96,11 +109,42 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const checkLatestFailover = useCallback(async () => {
+    try {
+      const res = await fetchRequests({ failover: 'only', limit: 1 });
+      const latest = res.items?.[0];
+      const latestId = latest?.request_id ?? null;
+      if (lastFailoverIdRef.current === undefined) {
+        lastFailoverIdRef.current = latestId;
+        return;
+      }
+      if (latest && latestId && latestId !== lastFailoverIdRef.current) {
+        lastFailoverIdRef.current = latestId;
+        setFailoverNotice({
+          requestId: latest.request_id,
+          appName: latest.application_name || latest.application_id || 'Application',
+          fromModel: latest.failover_from_model || 'primary',
+          toModel: latest.model,
+          reason: latest.failover_reason || 'upstream_error',
+          succeeded: latest.failover_used === 1,
+          attempts: latest.failover_attempts || 1
+        });
+      }
+    } catch {
+      // Gateway may still be starting; ignore transient polling failure.
+    }
+  }, []);
+
   useEffect(() => {
     refreshAlertCount();
-    const interval = setInterval(refreshAlertCount, 30 * 1000);
-    return () => clearInterval(interval);
-  }, [refreshAlertCount]);
+    checkLatestFailover();
+    const alertInterval = setInterval(refreshAlertCount, 30 * 1000);
+    const failoverInterval = setInterval(checkLatestFailover, 5000);
+    return () => {
+      clearInterval(alertInterval);
+      clearInterval(failoverInterval);
+    };
+  }, [refreshAlertCount, checkLatestFailover]);
 
   useEffect(() => {
     let gPressed = false;
@@ -206,7 +250,7 @@ export const App: React.FC = () => {
       const [sumData, tsData, reqData, appsData, modelsData] = await Promise.all([
         fetchSummary({ interval: timeframeInterval, start: timeframeStart, appId: selectedAppId ?? undefined }).catch(() => null),
         fetchTimeSeries({ interval: timeframeInterval, start: timeframeStart, appId: selectedAppId ?? undefined }).catch(() => []),
-        fetchRequests({ page, limit: 10, appId: selectedAppId ?? undefined }).catch(() => null),
+        fetchRequests({ page, limit: 20, appId: selectedAppId ?? undefined }).catch(() => null),
         fetchApplications().catch(() => ({ applications: [] })),
         fetchInstalledModels().catch(() => null)
       ]);
@@ -232,6 +276,23 @@ export const App: React.FC = () => {
     loadDashboardData();
   }, [loadDashboardData]);
 
+  useEffect(() => {
+    if (currentTab !== 'overview' || !overviewAutoRefresh) return;
+    const interval = setInterval(() => {
+      loadDashboardData();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [currentTab, overviewAutoRefresh, loadDashboardData]);
+
+  const handleManualOverviewRefresh = async () => {
+    setOverviewRefreshing(true);
+    try {
+      await loadDashboardData();
+    } finally {
+      setOverviewRefreshing(false);
+    }
+  };
+
   // Default the workspace to the first application once apps are known, but
   // preserve an explicit "All applications" choice (selectedAppId === null).
   useEffect(() => {
@@ -248,6 +309,7 @@ export const App: React.FC = () => {
   const handleBenchmarkComplete = () => {
     setBenchmarkRefresh(prev => prev + 1);
     loadDashboardData();
+    checkLatestFailover();
   };
 
   const copyConfigSnippet = async () => {
@@ -297,6 +359,8 @@ export const App: React.FC = () => {
     });
 
     setBenchmarkRefresh(prev => prev + 1);
+    setFailoverNotice(null);
+    lastFailoverIdRef.current = null;
     setResetNotification(
       `${result.message} (${result.deletedEvents} requests cleared${result.clearApps ? `, ${result.deletedApps} apps wiped` : ''}).`
     );
@@ -525,6 +589,55 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* In-App Failover Toast */}
+        {failoverNotice && (
+          <div
+            className={`mp-failover-toast ${failoverNotice.succeeded ? 'ok' : 'error'}`}
+            role="status"
+          >
+            <div className="mp-failover-toast-copy">
+              <ZapIcon size={14} />
+              <span>
+                {failoverNotice.succeeded ? (
+                  <>
+                    <strong>Failover triggered</strong> ({failoverNotice.appName}):{' '}
+                    <code className="font-mono">{failoverNotice.fromModel}</code> failed (
+                    {failoverReasonLabel(failoverNotice.reason)}) → routed via{' '}
+                    <code className="font-mono">{failoverNotice.toModel}</code>
+                  </>
+                ) : (
+                  <>
+                    <strong>Failover failed</strong> ({failoverNotice.appName}):{' '}
+                    <code className="font-mono">{failoverNotice.fromModel}</code> failed (
+                    {failoverReasonLabel(failoverNotice.reason)}) after {failoverNotice.attempts}{' '}
+                    fallback attempt(s)
+                  </>
+                )}
+              </span>
+            </div>
+            <div className="mp-failover-toast-actions">
+              <button
+                type="button"
+                className="mp-link-btn"
+                onClick={() => {
+                  inspectLogs({ failover: 'only', search: failoverNotice.requestId });
+                  setFailoverNotice(null);
+                }}
+              >
+                View trace ↗
+              </button>
+              <button
+                type="button"
+                className="mp-icon-btn"
+                onClick={() => setFailoverNotice(null)}
+                aria-label="Dismiss failover notification"
+              >
+                <CloseIcon size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Page Body View Router */}
         <main className="mp-page-body">
           <Suspense fallback={<div className="mp-empty compact"><strong>Loading view...</strong></div>}>
@@ -546,7 +659,11 @@ export const App: React.FC = () => {
                 onSelectAppId={(appId) => setSelectedAppId(appId)}
                 activeTimeframe={overviewTimeframe}
                 onTimeframeChange={setOverviewTimeframe}
-                onInspectRequest={(requestId) => inspectLogs({ failover: 'only', search: requestId })}
+                autoRefresh={overviewAutoRefresh}
+                onAutoRefreshChange={setOverviewAutoRefresh}
+                refreshing={overviewRefreshing}
+                onRefresh={handleManualOverviewRefresh}
+                onInspectRequest={(requestId) => inspectLogs({ failover: 'all', search: requestId })}
                 gatewayPort={gatewayPort}
               />
             )}
@@ -605,6 +722,7 @@ export const App: React.FC = () => {
             {currentTab === 'failover' && (
               <FailoverView
                 applications={applications}
+                activeModel={activeModel}
                 selectedAppId={routingAppId}
                 onSelectAppId={setSelectedAppId}
                 onApplicationsChanged={loadDashboardData}

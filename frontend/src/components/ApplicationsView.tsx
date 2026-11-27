@@ -239,7 +239,7 @@ console.log(completion.choices[0].message.content);`;
               className="font-mono"
               style={{
                 fontSize: '0.6875rem',
-                background: 'rgba(255, 255, 255, 0.05)',
+                background: 'var(--mp-hover-bg)',
                 border: '1px solid var(--mp-border)',
                 padding: '2px 7px',
                 borderRadius: '4px',
@@ -262,7 +262,7 @@ console.log(completion.choices[0].message.content);`;
             onClick={() => setIsCreateModalOpen(true)}
             style={{
               background: 'var(--mp-orange)',
-              color: '#0c0e14',
+              color: 'var(--mp-btn-primary-text, #0c0e14)',
               border: 'none',
               borderRadius: '6px',
               padding: '6px 14px',
@@ -348,7 +348,7 @@ console.log(completion.choices[0].message.content);`;
               <span>SELECTED APP ROUTING</span>
               <InfoTip
                 title="Global vs Pinned Routing"
-                text="Global means the app uses whichever model is currently set as the Global Fallback when sending 'active-model'. Pinned means this app stays locked to one specific model."
+                text="SLIR ignores any model configured in your SDK and always routes via SLIR's selected model. Global follows the shared Global Fallback; Pinned locks this app to one specific model."
               />
             </span>
             <InfoTip
@@ -362,7 +362,7 @@ console.log(completion.choices[0].message.content);`;
               <span
                 style={{
                   fontSize: '0.625rem',
-                  background: 'rgba(255, 255, 255, 0.05)',
+                  background: 'var(--mp-hover-bg)',
                   padding: '1px 5px',
                   borderRadius: '3px',
                   color: 'var(--mp-text-secondary)'
@@ -580,7 +580,7 @@ console.log(completion.choices[0].message.content);`;
                 <span
                   style={{
                     fontSize: '0.625rem',
-                    background: 'rgba(255, 255, 255, 0.05)',
+                    background: 'var(--mp-hover-bg)',
                     padding: '2px 6px',
                     borderRadius: '4px',
                     color: 'var(--mp-text-secondary)'
@@ -654,8 +654,8 @@ console.log(completion.choices[0].message.content);`;
                   title={current.defaultModel === 'active-model' ? 'Global fallback' : 'Pinned model'}
                   text={
                     current.defaultModel === 'active-model'
-                      ? 'Requests with model "active-model" follow the shared Global Fallback.'
-                      : `Requests with model "active-model" are locked to ${current.defaultModel}.`
+                      ? 'All requests from this app follow the shared Global Fallback, ignoring any model configured in the SDK.'
+                      : `All requests from this app are locked to ${current.defaultModel}, ignoring any model configured in the SDK.`
                   }
                 >
                   <span className={`mp-badge ${current.defaultModel === 'active-model' ? 'neutral' : 'warn'}`}>
@@ -680,8 +680,8 @@ console.log(completion.choices[0].message.content);`;
               </select>
               <div style={{ marginTop: '6px', fontSize: '0.625rem', color: routingFeedback ? 'var(--mp-text-secondary)' : 'var(--mp-text-muted)' }}>
                 {routingFeedback || (current.defaultModel === 'active-model'
-                  ? 'Requests with model "active-model" resolve to the global fallback.'
-                  : `Requests with model "active-model" for this app resolve to ${current.defaultModel}.`)}
+                  ? 'All SDK requests for this app resolve to the global fallback (SDK model is ignored).'
+                  : `All SDK requests for this app resolve to ${current.defaultModel} (SDK model is ignored).`)}
               </div>
             </div>
 
@@ -718,7 +718,7 @@ console.log(completion.choices[0].message.content);`;
                     key={tab}
                     onClick={() => setActiveCodeTab(tab)}
                     style={{
-                      background: activeCodeTab === tab ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+                      background: activeCodeTab === tab ? 'var(--mp-surface-hover)' : 'transparent',
                       border: '1px solid',
                       borderColor: activeCodeTab === tab ? 'var(--mp-border-strong)' : 'transparent',
                       color: activeCodeTab === tab ? 'var(--mp-text-primary)' : 'var(--mp-text-muted)',

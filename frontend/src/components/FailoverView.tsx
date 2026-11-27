@@ -17,9 +17,11 @@ import {
 } from './icons/Icons';
 import { InfoTip } from './InfoTip';
 import { FailoverTraceList } from './FailoverTraceList';
+import { FailoverOutcomeBanner } from './FailoverRouteSummary';
 
 interface FailoverViewProps {
   applications: ApplicationItem[];
+  activeModel?: string;
   selectedAppId?: string | null;
   onSelectAppId?: (appId: string | null) => void;
   onApplicationsChanged?: () => void;
@@ -35,6 +37,7 @@ const formatTime = (iso?: string | null) => {
 
 export const FailoverView: React.FC<FailoverViewProps> = ({
   applications,
+  activeModel,
   selectedAppId = null,
   onSelectAppId,
   onApplicationsChanged,
@@ -52,9 +55,9 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const savedModels = activeApp?.fallbackModels || [];
-  const savedEnabled = Boolean(activeApp?.failoverEnabled);
-  const dirty = enabled !== savedEnabled || fallbackModels.join('\u0000') !== savedModels.join('\u0000');
+  const effectivePrimaryModel = activeApp?.defaultModel === 'active-model'
+    ? (modelsData?.activeModel || activeModel || 'active-model')
+    : (activeApp?.defaultModel || 'Primary');
 
   const availableModels = useMemo(() => {
     const values = new Set<string>();
@@ -64,15 +67,18 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
     for (const custom of modelsData?.customModels || []) {
       if (custom.modelId) values.add(custom.modelId);
     }
+    if (effectivePrimaryModel && effectivePrimaryModel !== 'Primary') {
+      values.delete(effectivePrimaryModel);
+    }
     for (const model of fallbackModels) values.delete(model);
     return Array.from(values).sort();
-  }, [fallbackModels, modelsData]);
+  }, [effectivePrimaryModel, fallbackModels, modelsData]);
 
   const failoverEvents = recentFailoverEvents;
 
   const primaryLabel = activeApp?.defaultModel === 'active-model'
-    ? 'Global active model'
-    : activeApp?.defaultModel || 'Primary';
+    ? `${effectivePrimaryModel} (Global)`
+    : (activeApp?.defaultModel || 'Primary');
 
   const loadModels = useCallback(async () => {
     try {
@@ -125,55 +131,82 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
     onSelectAppId?.(appId || null);
   };
 
-  const handleAdd = () => {
-    if (!selectedModel || fallbackModels.includes(selectedModel)) return;
-    if (fallbackModels.length >= 5) {
-      setError('A maximum of five fallback models can be configured.');
-      return;
-    }
-    setFallbackModels((current) => [...current, selectedModel]);
-    setSelectedModel('');
-    setError(null);
-  };
-
-  const moveModel = (index: number, direction: -1 | 1) => {
-    const nextIndex = index + direction;
-    if (nextIndex < 0 || nextIndex >= fallbackModels.length) return;
-    setFallbackModels((current) => {
-      const next = [...current];
-      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
-      return next;
-    });
-  };
-
-  const handleSave = async () => {
+  const persistChain = async (
+    nextEnabled: boolean,
+    nextModels: string[],
+    successMessage: string
+  ) => {
     if (!activeApp) return;
+    const prevEnabled = enabled;
+    const prevModels = fallbackModels;
+    setEnabled(nextEnabled);
+    setFallbackModels(nextModels);
+    setError(null);
+    setSaving(true);
     try {
-      setSaving(true);
-      setError(null);
-      const result = await updateApplication(activeApp.id, {
-        failoverEnabled: enabled,
-        fallbackModels
+      await updateApplication(activeApp.id, {
+        failoverEnabled: nextEnabled,
+        fallbackModels: nextModels
       });
-      setNotice(
-        enabled && fallbackModels.length > 0
-          ? `Failover chain saved for ${activeApp.name}.`
-          : `Automatic failover disabled for ${result.application?.name || activeApp.name}.`
-      );
+      setNotice(successMessage);
       onApplicationsChanged?.();
       await loadRecentEvents();
     } catch (err: any) {
+      setEnabled(prevEnabled);
+      setFallbackModels(prevModels);
       setError(err.message || 'Failed to save failover settings.');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleReset = () => {
-    setEnabled(Boolean(activeApp?.failoverEnabled));
-    setFallbackModels(activeApp?.fallbackModels ? [...activeApp.fallbackModels] : []);
-    setError(null);
-    setNotice(null);
+  const handleAdd = async () => {
+    if (!activeApp || !selectedModel || fallbackModels.includes(selectedModel) || saving) return;
+    if (fallbackModels.length >= 5) {
+      setError('A maximum of five fallback models can be configured.');
+      return;
+    }
+    const modelToAdd = selectedModel;
+    const nextModels = [...fallbackModels, modelToAdd];
+    setSelectedModel('');
+    await persistChain(
+      true,
+      nextModels,
+      `Added ${modelToAdd} to ${activeApp.name}. Requests start on ${effectivePrimaryModel} and fail over automatically.`
+    );
+  };
+
+  const moveModel = async (index: number, direction: -1 | 1) => {
+    if (!activeApp || saving) return;
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= fallbackModels.length) return;
+    const next = [...fallbackModels];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    await persistChain(enabled, next, `Updated failover priority order for ${activeApp.name}.`);
+  };
+
+  const handleRemoveModel = async (modelToRemove: string) => {
+    if (!activeApp || saving) return;
+    const nextModels = fallbackModels.filter((item) => item !== modelToRemove);
+    const nextEnabled = nextModels.length > 0 ? enabled : false;
+    await persistChain(
+      nextEnabled,
+      nextModels,
+      nextModels.length > 0
+        ? `Removed ${modelToRemove} from ${activeApp.name}'s failover chain.`
+        : `Removed ${modelToRemove}. No fallback models remain for ${activeApp.name}.`
+    );
+  };
+
+  const handleToggleEnabled = async (nextEnabled: boolean) => {
+    if (!activeApp || saving) return;
+    await persistChain(
+      nextEnabled,
+      fallbackModels,
+      nextEnabled
+        ? `Automatic failover enabled for ${activeApp.name}.`
+        : `Automatic failover paused for ${activeApp.name}.`
+    );
   };
 
   const handleRefresh = async () => {
@@ -200,18 +233,17 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
           <div className="mp-eyebrow">Resilience</div>
           <h1 className="mp-page-title">Automatic Failover</h1>
           <p className="mp-page-subtitle">
-            Give each application an ordered fallback chain. Rate limits, timeouts, network errors and provider 5xx
-            responses switch to the next model without changing the client request.
+            Requests always start on whatever primary model is currently active for the app. Just add fallback models
+            below and SLIR switches through them automatically on 429 rate limits, 5xx errors, timeouts, or network errors.
           </p>
         </div>
         <div className="mp-costs-actions">
-          <button className="mp-btn mp-btn-ghost" onClick={handleRefresh} disabled={loading}>
+          <span className="mp-badge neutral font-mono">
+            {saving ? 'Saving...' : 'Saves automatically'}
+          </span>
+          <button className="mp-btn mp-btn-ghost" onClick={handleRefresh} disabled={loading || saving}>
             <RefreshCwIcon size={13} />
             Refresh
-          </button>
-          <button className="mp-btn mp-btn-primary" onClick={handleSave} disabled={!dirty || saving}>
-            <CheckIcon size={13} />
-            {saving ? 'Saving...' : 'Save changes'}
           </button>
         </div>
       </div>
@@ -254,8 +286,8 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
               text="The first model SLIR calls for this app (either the Global Fallback or its Pinned model). Fallbacks only run if this primary model fails with 429, 5xx, timeout, or network error."
             />
           </span>
-          <strong className="mp-failover-primary">
-            {activeApp.defaultModel === 'active-model' ? 'Global active model' : activeApp.defaultModel}
+          <strong className="mp-failover-primary" title={effectivePrimaryModel}>
+            {primaryLabel}
           </strong>
         </div>
       </div>
@@ -294,18 +326,19 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
             <input
               type="checkbox"
               checked={enabled}
-              onChange={(event) => setEnabled(event.target.checked)}
+              disabled={saving}
+              onChange={(event) => handleToggleEnabled(event.target.checked)}
             />
             <span>
               <strong>Enable automatic failover</strong>
-              <small>When off, the fallback order is preserved but never used.</small>
+              <small>Turns on automatically as soon as you add a failover model below.</small>
             </span>
           </label>
 
           <div className={`mp-failover-route-preview ${enabled ? '' : 'disabled'}`}>
             <div className="mp-failover-route-step primary">
               <span>Primary</span>
-              <strong>{primaryLabel}</strong>
+              <strong title={effectivePrimaryModel}>{primaryLabel}</strong>
             </div>
             {fallbackModels.map((model, index) => (
               <React.Fragment key={model}>
@@ -327,7 +360,7 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
             {fallbackModels.length === 0 ? (
               <div className="mp-empty compact">
                 <strong>No fallback models configured</strong>
-                <span>Add a model below. The primary model is already the first route.</span>
+                <span>Pick a model below to add it and activate failover immediately on top of {effectivePrimaryModel}.</span>
               </div>
             ) : (
               fallbackModels.map((model, index) => (
@@ -338,7 +371,7 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
                     <button
                       className="mp-icon-btn"
                       onClick={() => moveModel(index, -1)}
-                      disabled={index === 0}
+                      disabled={saving || index === 0}
                       title="Move up"
                       aria-label={`Move ${model} up`}
                     >
@@ -347,7 +380,7 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
                     <button
                       className="mp-icon-btn"
                       onClick={() => moveModel(index, 1)}
-                      disabled={index === fallbackModels.length - 1}
+                      disabled={saving || index === fallbackModels.length - 1}
                       title="Move down"
                       aria-label={`Move ${model} down`}
                     >
@@ -355,7 +388,8 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
                     </button>
                     <button
                       className="mp-icon-btn danger"
-                      onClick={() => setFallbackModels((current) => current.filter((item) => item !== model))}
+                      onClick={() => handleRemoveModel(model)}
+                      disabled={saving}
                       title="Remove fallback model"
                       aria-label={`Remove ${model}`}
                     >
@@ -373,10 +407,10 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
                 className="mp-select font-mono"
                 value={selectedModel}
                 onChange={(event) => setSelectedModel(event.target.value)}
-                disabled={availableModels.length === 0 || fallbackModels.length >= 5}
+                disabled={saving || availableModels.length === 0 || fallbackModels.length >= 5}
               >
                 <option value="">
-                  {availableModels.length === 0 ? 'No other models available' : 'Select a fallback model'}
+                  {availableModels.length === 0 ? 'No other models available' : 'Select a failover model'}
                 </option>
                 {availableModels.map((model) => (
                   <option key={model} value={model}>{model}</option>
@@ -385,21 +419,18 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
               <ChevronDownIcon size={12} className="mp-select-chevron" />
             </span>
             <button
-              className="mp-btn mp-btn-secondary"
+              className="mp-btn mp-btn-primary"
               onClick={handleAdd}
-              disabled={!selectedModel || fallbackModels.length >= 5}
+              disabled={saving || !selectedModel || fallbackModels.length >= 5}
             >
-              Add model
+              {saving ? 'Adding...' : 'Add failover'}
             </button>
           </div>
 
           <div className="mp-failover-actions">
             <span className="mp-failover-hint">
-              Order matters: SLIR tries each model from top to bottom. Failed attempts are recorded in Request Logs.
+              Order matters: requests always run on the selected primary first ({effectivePrimaryModel}), then fail over top-to-bottom.
             </span>
-            <button className="mp-btn mp-btn-ghost" onClick={handleReset} disabled={!dirty || saving}>
-              Discard
-            </button>
           </div>
 
           <div className="mp-failover-notes">
@@ -477,11 +508,7 @@ export const FailoverView: React.FC<FailoverViewProps> = ({
                         </button>
                       )}
                     </div>
-                    <div className="mp-failover-event-route font-mono">
-                      <span>{event.failover_from_model || 'primary'}</span>
-                      <span className="mp-failover-arrow">→</span>
-                      <strong>{event.failover_used === 1 ? event.model : `${event.model} (failed)`}</strong>
-                    </div>
+                    <FailoverOutcomeBanner item={event} />
                     <div className="mp-failover-event-meta">
                       <span>{failoverReasonLabel(event.failover_reason)}</span>
                       <span>{event.failover_attempts || 0} fallback attempt(s)</span>

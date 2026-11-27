@@ -222,7 +222,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
             <button
               onClick={() => setMode('single')}
               style={{
-                background: mode === 'single' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+                background: mode === 'single' ? 'var(--mp-surface-hover)' : 'transparent',
                 border: 'none',
                 color: mode === 'single' ? 'var(--mp-text-primary)' : 'var(--mp-text-muted)',
                 padding: '4px 10px',
@@ -446,7 +446,7 @@ export const PlaygroundView: React.FC<PlaygroundViewProps> = ({
                 style={{
                   flex: 1,
                   background: 'var(--mp-orange)',
-                  color: '#0c0e14',
+                  color: 'var(--mp-btn-primary-text, #0c0e14)',
                   border: 'none',
                   borderRadius: '6px',
                   padding: '8px',

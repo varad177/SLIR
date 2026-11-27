@@ -16,8 +16,8 @@ const outcomeBadgeClass = (outcome?: string | null): 'ok' | 'warn' | 'err' => {
 };
 
 /**
- * Renders an ordered list of model attempts from `usage_events.failover_trace`,
- * including provider, HTTP status, attempt latency, and exact upstream error details.
+ * Renders an ordered step-by-step trace of failover attempts from `usage_events.failover_trace`,
+ * explicitly marking Primary vs Fallback roles and whether each model failed or responded.
  */
 export const FailoverTraceList: React.FC<FailoverTraceListProps> = ({ trace, emptyMessage }) => {
   if (trace.length === 0) {
@@ -29,18 +29,27 @@ export const FailoverTraceList: React.FC<FailoverTraceListProps> = ({ trace, emp
   return (
     <div className="mp-failover-trace-list">
       {trace.map((entry, index) => {
+        const ok = isTraceSuccessOutcome(entry.outcome);
         const tone = outcomeBadgeClass(entry.outcome);
+        const roleLabel = index === 0 ? 'Primary' : `Fallback #${index}`;
+
         return (
           <div className={`mp-failover-trace-entry ${tone}`} key={`${entry.model}-${index}`}>
             <div className="mp-failover-trace-head">
               <span className="mp-failover-trace-model font-mono" title={entry.model}>
                 <span className={`mp-failover-trace-step ${tone}`}>{index + 1}</span>
+                <span className={`mp-failover-trace-role ${index === 0 ? 'primary' : 'fallback'}`}>
+                  {roleLabel}
+                </span>
                 <span>{entry.model}</span>
                 {entry.provider && (
                   <span className="mp-failover-trace-provider">{entry.provider}</span>
                 )}
               </span>
               <span className="mp-failover-trace-metrics font-mono">
+                <span className={`mp-failover-trace-verdict ${ok ? 'ok' : 'err'}`}>
+                  {ok ? '✓ Responded' : '✕ Failed'}
+                </span>
                 <span className={`mp-failover-trace-outcome ${tone}`}>
                   {failoverReasonLabel(entry.outcome)}
                 </span>

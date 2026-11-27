@@ -23,11 +23,20 @@ import {
   ZapIcon,
   ChevronRightIcon,
   SlidersIcon,
-  CloseIcon
+  CloseIcon,
+  RotateCwIcon
 } from './icons/Icons';
 import { InfoTip } from './InfoTip';
+import { FailoverRouteSummary } from './FailoverRouteSummary';
+import { RequestDetailInspector } from './RequestDetailInspector';
 import { copyText } from '../utils/clipboard';
 import { failoverReasonLabel, hasFailoverActivity } from '../utils/failover';
+import {
+  formatTimestampParts,
+  formatLatency,
+  formatBreakdown,
+  requestStatusLabel
+} from '../utils/telemetryFormat';
 import { getBrowserGatewayBaseUrl } from '../utils/gatewayConnection';
 import {
   ResponsiveContainer,
@@ -58,33 +67,13 @@ interface OverviewViewProps {
   onSelectAppId?: (appId: string | null) => void;
   activeTimeframe: '15m' | '1h' | '6h' | '24h' | '7d' | 'all';
   onTimeframeChange: (tf: '15m' | '1h' | '6h' | '24h' | '7d' | 'all') => void;
+  autoRefresh?: boolean;
+  onAutoRefreshChange?: (enabled: boolean) => void;
+  refreshing?: boolean;
+  onRefresh?: () => void;
   onInspectRequest?: (requestId: string) => void;
 }
 
-const formatTimestampParts = (iso?: string) => {
-  if (!iso) {
-    return { time: '--:--:--', date: '----/--/-- UTC' };
-  }
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) {
-      const parts = iso.split('T');
-      return {
-        time: parts[1] ? parts[1].replace('Z', '').slice(0, 8) : iso,
-        date: parts[0] ? `${parts[0]} UTC` : 'UTC'
-      };
-    }
-    const pad = (n: number, z = 2) => String(n).padStart(z, '0');
-    const time = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-    const date = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-    return { time, date };
-  } catch {
-    return { time: iso, date: 'UTC' };
-  }
-};
-
-const formatLatency = (ms: number) => ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)} ms`;
-const formatBreakdown = (ms: number | null | undefined) => ms != null ? `${(ms / 1000).toFixed(2)}s` : 'n/a';
 const normalizeModel = (value?: string | null) => (value || '').replace(/^ollama\//, '').toLowerCase();
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
@@ -101,6 +90,10 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onSelectAppId,
   activeTimeframe,
   onTimeframeChange,
+  autoRefresh = true,
+  onAutoRefreshChange,
+  refreshing = false,
+  onRefresh,
   onInspectRequest,
   gatewayPort = 4101
 }) => {
@@ -121,6 +114,8 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const [switching, setSwitching] = useState(false);
   const [switchFeedback, setSwitchFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [tokenChartHover, setTokenChartHover] = useState<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
+  const [recentFilter, setRecentFilter] = useState<'all' | 'failover' | 'failure'>('all');
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
 
   const activeApp = applications.find((app) => app.id === selectedAppId) || applications[0];
   const routingAppId = activeApp?.id || selectedAppId;
@@ -213,15 +208,27 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         signal: AbortSignal.timeout(60000)
       });
       const payload = await res.json().catch(() => null);
+      const failoverHeader = res.headers.get('x-slir-failover');
+      const failoverFrom = res.headers.get('x-slir-failover-from') || effectiveModel;
+      const failoverReason = res.headers.get('x-slir-failover-reason');
       if (!res.ok) {
-        throw new Error(payload?.error?.message || payload?.error || `Gateway returned HTTP ${res.status}`);
+        onModelSwitched();
+        const errMsg = payload?.error?.message || payload?.error || `Gateway returned HTTP ${res.status}`;
+        throw new Error(
+          failoverHeader === 'attempted'
+            ? `Failover attempted but failed: ${errMsg}`
+            : errMsg
+        );
       }
       const latency = performance.now() - startedAt;
-      const routedModel = payload?.model || effectiveModel;
+      const routedModel = res.headers.get('x-slir-model') || payload?.model || effectiveModel;
       const tokens = payload?.usage?.total_tokens ?? 0;
+      onModelSwitched();
       setPingResult({
         ok: true,
-        label: `${Math.round(latency)} ms · ${routedModel} · ${tokens} tokens`
+        label: failoverHeader === 'true'
+          ? `Failover happened: ${failoverFrom} failed (${failoverReasonLabel(failoverReason)}) → ${routedModel} · ${Math.round(latency)} ms · ${tokens} tokens`
+          : `${Math.round(latency)} ms · ${routedModel} · ${tokens} tokens`
       });
     } catch (err: any) {
       setPingResult({ ok: false, label: err.message || 'Route test failed' });
@@ -322,7 +329,18 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     };
   });
 
-  const recentItems = requests?.items?.slice(0, 8) || [];
+  const allRecent = requests?.items || [];
+  const failoverCount = allRecent.filter((req) => hasFailoverActivity(req)).length;
+  const failureCount = allRecent.filter((req) => req.status === 'failure').length;
+  const filteredRecent = recentFilter === 'failover'
+    ? allRecent.filter((req) => hasFailoverActivity(req))
+    : recentFilter === 'failure'
+      ? allRecent.filter((req) => req.status === 'failure')
+      : allRecent;
+  const recentItems = filteredRecent.slice(0, 10);
+  const selectedItem = selectedRequestId
+    ? allRecent.find((req) => req.request_id === selectedRequestId) || null
+    : null;
 
   return (
     <div className="mp-overview">
@@ -382,8 +400,8 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               title={isPinned ? 'Pinned model' : 'Follows global fallback'}
               text={
                 isPinned
-                  ? 'This application is locked ("pinned") to a dedicated model. When it sends model: "active-model", SLIR routes here even if the Global Fallback changes.'
-                  : 'This application follows the shared Global Fallback. When it sends model: "active-model", SLIR routes to whichever model is set globally on the Models tab.'
+                  ? 'This application is locked ("pinned") to a dedicated model. All requests using this app key route here (ignoring any model sent by the SDK) even if the Global Fallback changes.'
+                  : 'This application follows the shared Global Fallback. All requests using this app key route to whichever model is set globally on the Models tab, regardless of the model configured in the SDK.'
               }
               example={isPinned ? 'Click "Follow global" to unpin' : 'Select a specific model below to pin this app'}
             >
@@ -732,109 +750,175 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         </div>
       </section>
 
-      <section className="mp-card">
-        <div className="mp-section-head">
-          <div>
-            <div className="mp-eyebrow">Latest activity</div>
-            <div className="mp-section-title">Recent requests</div>
+      <div className={`mp-logs-grid ${selectedItem ? 'has-inspector' : ''}`}>
+        <section className="mp-card mp-overview-requests-card">
+          <div className="mp-section-head">
+            <div>
+              <div className="mp-eyebrow">Latest activity</div>
+              <div className="mp-section-title">Recent requests</div>
+            </div>
+            <div className="mp-section-head-actions mp-recent-controls-wrap">
+              <div className="mp-segmented font-mono mp-segmented-compact" role="tablist" aria-label="Filter recent requests">
+                <button
+                  type="button"
+                  className={recentFilter === 'all' ? 'active' : ''}
+                  onClick={() => setRecentFilter('all')}
+                >
+                  All ({allRecent.length})
+                </button>
+                <button
+                  type="button"
+                  className={recentFilter === 'failover' ? 'active' : ''}
+                  onClick={() => setRecentFilter('failover')}
+                >
+                  Failovers ({failoverCount})
+                </button>
+                <button
+                  type="button"
+                  className={recentFilter === 'failure' ? 'active' : ''}
+                  onClick={() => setRecentFilter('failure')}
+                >
+                  Failed ({failureCount})
+                </button>
+              </div>
+              {onAutoRefreshChange && (
+                <label className="mp-checkbox" title="Poll dashboard KPIs, charts, and recent requests every 5 seconds">
+                  <input
+                    type="checkbox"
+                    checked={autoRefresh}
+                    onChange={(e) => onAutoRefreshChange(e.target.checked)}
+                  />
+                  <span>{autoRefresh ? 'Live tail' : 'Auto refresh'}</span>
+                  {autoRefresh && <span className="mp-live-dot" aria-hidden="true" />}
+                </label>
+              )}
+              {onRefresh && (
+                <button
+                  type="button"
+                  className="mp-btn mp-btn-ghost"
+                  onClick={onRefresh}
+                  disabled={refreshing}
+                >
+                  <RotateCwIcon size={12} className={refreshing ? 'spin' : ''} />
+                  {refreshing ? 'Refreshing' : 'Refresh'}
+                </button>
+              )}
+              <button className="mp-link-btn" onClick={() => onNavigateToTab('logs')}>
+                Open logs <ChevronRightIcon size={11} />
+              </button>
+            </div>
           </div>
-          <button className="mp-link-btn" onClick={() => onNavigateToTab('logs')}>
-            Open logs <ChevronRightIcon size={11} />
-          </button>
-        </div>
 
-        <div className="mp-table-wrapper">
-          <table className="mp-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Application</th>
-                <th>Model</th>
-                <th>Status</th>
-                <th>Latency breakdown</th>
-                <th>Tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentItems.length === 0 ? (
+          <div className="mp-table-wrapper">
+            <table className="mp-table">
+              <thead>
                 <tr>
-                  <td colSpan={6}>
-                    <div className="mp-empty compact">
-                      <strong>No requests yet</strong>
-                      <span>Requests appear here once an application sends traffic through the gateway.</span>
-                    </div>
-                  </td>
+                  <th>Time</th>
+                  <th>Application</th>
+                  <th>Model &amp; routing</th>
+                  <th>Status</th>
+                  <th>Latency breakdown</th>
+                  <th>Tokens</th>
+                  <th style={{ textAlign: 'right' }}>Details</th>
                 </tr>
-              ) : recentItems.map((req) => {
-                const ok = req.status === 'success';
-                const failoverActive = hasFailoverActivity(req);
-                const { time, date } = formatTimestampParts(req.timestamp);
-                return (
-                  <tr key={req.id}>
-                    <td>
-                      <div className="mp-table-primary font-mono">{time}</div>
-                      <div className="mp-table-secondary font-mono">{date}</div>
-                    </td>
-                    <td>
-                      <div className="mp-table-primary">{req.application_name || req.application_id || 'Direct client'}</div>
-                      {req.client_model && req.client_model !== req.model && (
-                        <div className="mp-table-secondary font-mono">requested {req.client_model}</div>
-                      )}
-                    </td>
-                    <td className="font-mono">
-                      <div>
-                        {req.model}
-                        {failoverActive && (
-                          <span className={`mp-failover-badge ${req.failover_used ? 'used' : 'failed'}`}>
-                            {req.failover_used ? 'Failover' : 'Failover failed'}
-                          </span>
-                        )}
+              </thead>
+              <tbody>
+                {recentItems.length === 0 ? (
+                  <tr>
+                    <td colSpan={7}>
+                      <div className="mp-empty compact">
+                        <strong>{allRecent.length === 0 ? 'No requests yet' : 'No matching recent requests'}</strong>
+                        <span>
+                          {allRecent.length === 0
+                            ? 'Requests appear here once an application sends traffic through the gateway.'
+                            : 'Switch filter back to All to see other recent traffic.'}
+                        </span>
                       </div>
-                      {failoverActive && (
-                        <div className="mp-table-secondary font-mono">
-                          from {req.failover_from_model || 'primary'}
-                          {req.failover_reason ? ` · ${failoverReasonLabel(req.failover_reason)}` : ''}
-                          {(req.failover_attempts || 0) > 0 ? ` · ${req.failover_attempts} fallback(s)` : ''}
-                          {onInspectRequest && (
-                            <button
-                              type="button"
-                              className="mp-link-btn"
-                              style={{ marginLeft: '6px', fontSize: '0.625rem' }}
-                              onClick={() => onInspectRequest(req.request_id)}
-                            >
-                              details ↗
-                            </button>
-                          )}
-                        </div>
-                      )}
                     </td>
-                    <td>
-                      <span className={`mp-badge ${ok ? 'success' : 'danger'}`}>
-                        {req.http_status || (ok ? 200 : 'error')}
-                      </span>
-                    </td>
-                    <td className="font-mono">
-                      <div>{formatLatency(req.latency_ms)}</div>
-                      <div className="mp-table-secondary" style={{ display: 'flex', gap: '10px', fontSize: '0.6875rem', fontVariantNumeric: 'tabular-nums' }}>
-                        <span title="Model load">L:{formatBreakdown(req.load_duration_ms)}</span>
-                        <span title="Prompt eval">PE:{formatBreakdown(req.prompt_eval_duration_ms)}</span>
-                        <span title="Generation">G:{formatBreakdown(req.eval_duration_ms)}</span>
-                      </div>
-                      {req.cache_status === 'cache_hit' && <span className="mp-table-secondary"> cache hit</span>}
-                    </td>
-                    <td className="font-mono">{(req.total_tokens || 0).toLocaleString()}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                ) : recentItems.map((req) => {
+                  const ok = req.status === 'success';
+                  const isSelected = selectedItem?.request_id === req.request_id;
+                  const { time, date } = formatTimestampParts(req.timestamp);
+                  const toggleSelect = () =>
+                    setSelectedRequestId((prev) => (prev === req.request_id ? null : req.request_id));
+                  return (
+                    <tr
+                      key={req.id}
+                      className={`mp-clickable-row ${isSelected ? 'selected' : ''}`}
+                      onClick={toggleSelect}
+                      tabIndex={0}
+                      aria-selected={isSelected}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          toggleSelect();
+                        }
+                      }}
+                    >
+                      <td>
+                        <div className="mp-table-primary font-mono">{time}</div>
+                        <div className="mp-table-secondary font-mono">{date}</div>
+                      </td>
+                      <td>
+                        <div className="mp-table-primary">{req.application_name || req.application_id || 'Direct client'}</div>
+                        {req.client_model && req.client_model !== req.model && (
+                          <div className="mp-table-secondary font-mono">SDK sent {req.client_model}</div>
+                        )}
+                      </td>
+                      <td>
+                        <FailoverRouteSummary item={req} showProvider={false} />
+                      </td>
+                      <td>
+                        <span className={`mp-badge ${ok ? 'success' : 'danger'}`}>
+                          {ok ? 'OK' : 'Failed'} · {requestStatusLabel(req)}
+                        </span>
+                      </td>
+                      <td className="font-mono">
+                        <div>{formatLatency(req.latency_ms)}</div>
+                        <div className="mp-table-secondary" style={{ display: 'flex', gap: '10px', fontSize: '0.6875rem', fontVariantNumeric: 'tabular-nums' }}>
+                          <span title="Model load">L:{formatBreakdown(req.load_duration_ms)}</span>
+                          <span title="Prompt eval">PE:{formatBreakdown(req.prompt_eval_duration_ms)}</span>
+                          <span title="Generation">G:{formatBreakdown(req.eval_duration_ms)}</span>
+                        </div>
+                        {req.cache_status === 'cache_hit' && <span className="mp-table-secondary">cache hit</span>}
+                      </td>
+                      <td className="font-mono">{(req.total_tokens || 0).toLocaleString()}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          className="mp-link-btn font-mono"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelect();
+                          }}
+                        >
+                          {isSelected ? 'Viewing' : 'Inspect'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-        <div className="mp-table-foot font-mono">
-          <span>Prompts and completions are not stored. Only anonymous telemetry is kept.</span>
-          <span>SQLite · WAL</span>
-        </div>
-      </section>
+          <div className="mp-table-foot font-mono">
+            <span>Click any request row to inspect full failover hops, latency breakdown, and errors.</span>
+            <span>SQLite · WAL</span>
+          </div>
+        </section>
+
+        {selectedItem && (
+          <RequestDetailInspector
+            item={selectedItem}
+            gatewayPort={gatewayPort}
+            onClose={() => setSelectedRequestId(null)}
+            onOpenInLogs={onInspectRequest}
+            onReplayInPlayground={() => onNavigateToTab('playground')}
+          />
+        )}
+      </div>
 
       {tokenChartHover.active && chartData.length > 0 && (
         <div
