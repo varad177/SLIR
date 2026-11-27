@@ -322,4 +322,4 @@ When set, this URL becomes the single source of truth for all generated code sni
 ---
 
 ## 📄 License
-MIT License. Built for developers building local AI systems.
+MIT License. Built for developers building AI systems.
